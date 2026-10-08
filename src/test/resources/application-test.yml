@@ -1,0 +1,8 @@
+agent-harness:
+  filesystem-mcp-server:
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    com.aicompany.agentharness: INFO

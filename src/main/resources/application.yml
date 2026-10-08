@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: agent-harness
+  main:
+    banner-mode: off
+
+agent-harness:
+  max-steps: 10
+  filesystem-mcp-server:
+    enabled: true
+    command:
+      - npx
+      - -y
+      - "@modelcontextprotocol/server-filesystem@2026.8.31"
+    # MCP Server가 접근을 허용할 유일한 디렉터리. 이 디렉터리 밖의 경로는 서버가 거부한다.
+    workspace: .
+    timeout: 30s
+  # Agent에게 공개하고 실행을 허용할 Tool. allowed에 있고 denied에 없는 Tool만 허용한다.
+  # allowed가 비어 있으면 어떤 Tool도 허용하지 않는다. Code Quality Agent V1은 분석 전용이므로 읽기/탐색 Tool만 허용한다.
+  tools:
+    allowed:
+      - read_text_file
+      - read_multiple_files
+      - list_directory
+      - list_directory_with_sizes
+      - directory_tree
+      - search_files
+      - get_file_info
+      - list_allowed_directories
+    denied:
+      - write_file
+      - edit_file
+      - create_directory
+      - move_file
+
+logging:
+  level:
+    root: INFO
+    com.aicompany.agentharness: DEBUG
+
+llm:
+  gemini:
+    # 환경변수로만 주입한다. 미설정 시 빈 값이 되어 첫 LLM 호출에서 명확한 오류를 낸다.
+    api-key: ${GEMINI_API_KEY:}
+    model: gemini-3.5-flash
+    url: https://generativelanguage.googleapis.com/v1beta
+    timeout: 60s
+  # 일시적인 실패(429, 500/502/503/504, 네트워크 오류)만 재시도한다. 다른 4xx는 즉시 실패한다.
+  # max-attempts는 첫 호출을 포함한 횟수다(3이면 1s, 2s 대기 후 최대 2번 재시도).
+  # Provider가 대기 시간(Retry-After)을 주면 그 값을 우선하되 max-backoff를 넘지 않는다.
+  retry:
+    enabled: true
+    max-attempts: 3
+    initial-backoff: 1s
+    multiplier: 2.0
+    max-backoff: 10s
+    jitter: 0.1
