@@ -16,6 +16,7 @@ Agent 시스템은 다음 구성요소로 이루어진다.
 - ToolRegistry
 - ToolPermissionPolicy
 - AgentResult
+- WorkUnitPlanner
 - MCP Client
 - MCP Tool Adapter
 
@@ -34,6 +35,19 @@ Agent 시스템은 다음 구성요소로 이루어진다.
 현재 상태를 기반으로 다음 행동을 결정한다.
 
 Agent는 Tool을 직접 실행하지 않는다.
+
+#### Code Quality Agent (V1)
+
+V1의 CodeQualityAgent는 Read-only Code Quality Agent이며, 책임은 다음으로 제한한다.
+
+- Task 해석
+- 코드 탐색을 위한 Tool 사용 결정
+- Code Quality Analysis
+- Improvement Plan 생성
+- 결과(Report) 반환
+
+코드 변경(Code Modification)은 담당하지 않는다.
+V2 이상에서 별도의 Agent 또는 Workflow로 확장할 수 있다.
 
 ### LLM
 
@@ -96,6 +110,16 @@ Agent가 사용할 수 있는 Tool을 설정(`agent-harness.tools.allowed/denied
 ### AgentResult
 
 Agent 작업이 종료되었을 때 최종 결과를 표현한다.
+
+### WorkUnitPlanner (Context Management)
+
+LLM 한 번의 분석에 함께 전달할 파일 묶음(WorkUnit)을 결정한다.
+
+- 묶는 기준은 `GroupingStrategy`가 결정한다. V1은 같은 디렉터리(패키지)의 파일을 묶는다.
+- 그룹이 최대 Context 크기를 넘으면 여러 WorkUnit으로 나눈다. 코드는 요약하거나 자르지 않는다.
+- 결과는 입력 순서와 무관하게 결정적이다.
+- 패키지 단위로 묶는 `WorkUnitPlanner`는 아직 실행 경로에 연결되어 있지 않다(ADR-012).
+- CLI의 실제 분석은 클래스를 묶지 않고 파일 하나씩 `ClassAnalysisCoordinator`가 AgentRunner로 실행한다(ADR-013).
 
 ### MCP Client
 
@@ -177,3 +201,6 @@ AgentResult
 - CLI는 다음 행동을 결정하거나 Tool을 실행하지 않는다. 실행 루프는 AgentRunner에만 존재한다.
 - Agent, AgentRunner, Llm은 Spring Bean으로 주입받는다.
 - 파일 접근 범위 제한은 CLI가 아니라 MCP Server의 workspace 설정이 담당한다.
+- `--target` 상대 경로는 workspace 기준으로만 해석하며, workspace와의 결합은 CLI에서 한 번만 한다.
+  이후 계층(Task, Agent, LLM, MCP Tool)에는 절대 경로로 전달한다.
+- workspace 밖이거나 존재하지 않는 target은 LLM 호출 전에 CLI가 거부한다(입력 오류를 빨리 알리기 위한 검사).

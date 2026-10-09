@@ -52,7 +52,8 @@ class ToolPermissionConfigurationTest {
 		toolRegistry.register(new NoOpTool("write_file"));
 		AgentHarnessProperties properties = new AgentHarnessProperties(5,
 				new AgentHarnessProperties.FilesystemMcpServer(true, List.of(), ".", Duration.ofSeconds(1)),
-				new AgentHarnessProperties.Tools(List.of("read_text_file", "not_existing_tool"), List.of("write_file")));
+				new AgentHarnessProperties.Tools(List.of("read_text_file", "not_existing_tool"), List.of("write_file")),
+				new AgentHarnessProperties.ClassAnalysis(100000, "search_files", "read_text_file"));
 
 		ToolPermissionPolicy policy = new AgentHarnessConfiguration().toolPermissionPolicy(properties, toolRegistry);
 

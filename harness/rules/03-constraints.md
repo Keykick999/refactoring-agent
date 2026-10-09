@@ -27,15 +27,31 @@
 
 ## Scope
 
-V1에서는 다음 범위를 유지한다.
+V1은 Read-only Code Quality Agent다. V1에서는 다음 범위를 유지한다.
 
-- 코드 품질 분석
-- 코드 품질 개선
-- 코드 수정
+- 코드 읽기/탐색
+- Code Quality Analysis
+- Code Quality Issue 식별
+- Improvement Plan 제안
+- Report 생성
+
+V1에서는 다음을 지킨다.
+
+- 소스 코드를 직접 수정하지 않는다.
+- 파일을 변경하는 Tool(write/edit/move)을 사용하지 않는다.
+- 분석 결과를 실제 파일에 반영하지 않는다.
+- 분석에 필요한 파일은 read-only 방식으로 접근한다.
+
+실제 Tool 허용/거부는 Tool Permission Policy(ADR-009)가 담당한다.
 
 다음 기능은 V1 범위에서 제외한다.
 
+- Code Modification (코드 자동 수정, 리팩토링 코드 적용)
+- 테스트 실행
 - 테스트 실패 원인 분석
 - 자동 버그 수정
+- 수정 → 검증 → 재수정 루프
 - 배포
 - Git 자동 커밋/푸시
+
+Code Modification은 V2 이상의 범위로 둔다.

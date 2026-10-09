@@ -48,6 +48,9 @@ desktop.ini
 logs/
 *.log
 
+### Local database ###
+data/
+
 ### Secrets / Local config ###
 .env
 .env.*

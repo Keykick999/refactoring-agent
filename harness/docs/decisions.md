@@ -68,9 +68,11 @@ Agent의 핵심 로직과 LLM Provider의 구현을 분리하고,
 
 ## ADR-004: V1에서 실행 범위 제한
 
+> Status: ADR-011로 구체화됨. V1은 코드를 수정하지 않는 Read-only Code Quality Agent이며, "개선"은 Improvement Plan 제안을 의미한다.
+
 ### Decision
 
-Code Quality Agent V1은 코드 품질 분석과 개선에 집중한다.
+Code Quality Agent V1은 Code Quality Analysis와 개선안(Improvement Plan) 제안에 집중한다.
 
 다음 기능은 V1 범위에서 제외한다.
 
@@ -114,6 +116,8 @@ MCP Client는 외부 SDK 없이 직접 구현하고, JSON 처리를 위해 Jacks
 
 - 실행 환경에 MCP Server 실행 수단(Filesystem MCP Server의 경우 Node.js/npx)이 필요하다.
 - MCP Server가 접근할 workspace 디렉터리는 서버 실행 인자로 명시적으로 지정한다.
+- 기본 workspace는 프로젝트 루트가 아닌 `src`로 둔다. `.git`, `build`, Gradle 설정, `.env` 등
+  분석 대상이 아닌 파일을 Agent(와 LLM)에 노출하지 않기 위해서다.
 
 ---
 
@@ -204,7 +208,7 @@ Agent가 볼 수 있는 Tool과 실제로 실행할 수 있는 Tool은 `ToolPerm
   거부된 Tool은 실행하지 않고 `ToolResult.failure(toolName, "Tool execution denied: <toolName>")`를 AgentState에 남긴다.
 - 등록되지 않은 Tool 호출은 기존처럼 `Unknown tool`로 처리한다(존재 여부를 먼저 확인).
 - 설정에 있지만 등록되지 않은 Tool 이름은 시작 시 경고 로그만 남기고 무시한다.
-- Code Quality Agent V1은 read-only를 기본으로 한다. `application.yml`은 읽기/탐색 Tool만 allowed에 두고,
+- Code Quality Agent V1은 read-only를 기본으로 한다(V1 범위는 ADR-011). `application.yml`은 읽기/탐색 Tool만 allowed에 두고,
   파일을 변경하는 Tool(write_file, edit_file, create_directory, move_file)은 denied에 둔다.
 - allowed가 비어 있거나 설정되지 않으면 어떤 Tool도 허용하지 않는다(fail-closed).
 
@@ -300,6 +304,133 @@ AgentRunner → CodeQualityAgent → Llm(RetryingLlm) → GeminiLlm → Gemini A
 - Fake Gemini HTTP 서버로 응답 순서(429 → 200 등)를 고정하여, 실제 `GeminiLlm`의 오류 분류와 `RetryingLlm`의 재시도를 함께 검증한다.
 - jitter는 테스트에서 0으로 두고, jitter 범위는 별도 테스트로 경계만 검증한다.
 - 실제 Gemini 통합 테스트는 기존 스위치(`-Pllm.integration=true`)를 그대로 사용한다.
+
+---
+
+## ADR-011: V1은 Read-only Code Quality Agent
+
+### Decision
+
+V1은 Read-only Code Quality Agent다.
+지정된 코드 범위를 탐색하고 분석하여 Code Quality Issue와 Improvement Plan을 Report로 제시하지만,
+소스 코드 파일을 직접 수정하지 않는다.
+
+- V1 범위: 코드 읽기/탐색, Code Quality Analysis, Code Quality Issue 식별, Improvement Plan 제안, Report 생성
+- V1 제외: Code Modification(write/edit/move를 통한 파일 변경, 코드 자동 수정, 리팩토링 코드 적용),
+  수정 후 테스트 실행, 테스트 실패 분석 후 재수정, 수정 → 검증 → 재수정 루프
+- Code Modification은 V2 이상의 범위로 둔다. V2의 구체적인 설계는 아직 확정하지 않는다.
+
+### Reason
+
+- requirements.md와 03-constraints.md는 V1에 코드 수정을 포함하고, ADR-009는 V1을 read-only로 정의하여
+  문서 간 V1 범위가 충돌했다. 현재 구현(Tool Permission Policy로 파일 변경 Tool 거부)과 일치하는 read-only 방향을 채택한다.
+- 코드 수정은 테스트 실행, 검증, 재수정 루프까지 함께 설계해야 안전하게 제공할 수 있다.
+  V1에서는 Harness의 기본 실행 구조와 분석 품질을 먼저 검증한다.
+
+### Consequences
+
+- requirements.md, workflow.md, 03-constraints.md의 V1 범위를 read-only로 통일했다.
+- ADR-004의 "개선"은 Improvement Plan 제안을 의미하는 것으로 구체화한다.
+
+---
+
+## ADR-012: Work Unit으로 분석 범위를 나눈다
+
+### Decision
+
+"어떤 코드를 LLM 한 번의 분석으로 묶을 것인가"를 `context` 패키지의 `WorkUnitPlanner`가 담당한다.
+
+```text
+Target → (Code Explorer) → List<SourceFile> → WorkUnitPlanner(GroupingStrategy, ContextSizeEstimator) → List<WorkUnit> → (Context Builder) → LLM
+```
+
+- V1의 묶는 기준은 파일 위치(`PackageGroupingStrategy`: 같은 디렉터리 = 같은 그룹)와 Context 크기뿐이다.
+- 그룹이 최대 Context 크기를 넘으면 경로순으로 여러 Work Unit으로 나눈다.
+- 코드는 요약하거나 자르지 않는다. 파일 하나가 한도를 넘으면 단독 Work Unit으로 두고 `exceedsContextLimit`로 표시하며,
+  처리 방법(건너뛰기, 사용자 알림 등)은 사용하는 쪽이 결정한다.
+- 결과는 입력 순서와 무관하게 결정적이다(그룹은 이름순, 파일은 경로순).
+- GroupingStrategy가 파일을 빠뜨리거나 중복시키면 계획 단계에서 실패시켜, 분석되지 않는 코드가 생기지 않게 한다.
+
+### Extension Points
+
+- 묶는 기준: `GroupingStrategy` 구현을 추가한다(Domain, DDD, Dependency, 사용자 정의 등).
+  크기 분할과 정렬은 Planner가 공통으로 처리하므로 전략은 묶는 기준만 결정한다.
+- 크기 측정: `ContextSizeEstimator`를 교체한다. V1은 문자 수(`CHARACTERS`)이며, Provider의 token 계산으로 바꿀 수 있다.
+- 분석 스타일(General, Clean Code, SOLID, DDD, Spring/JPA, Architecture, Performance 등)은 "무엇을 묶을지"가 아니라
+  "어떤 관점으로 분석할지"이므로 Work Unit과 분리한다. 향후 Agent의 프롬프트(또는 Context Builder)에 주입하는 방식으로 추가한다.
+  필요성이 확인되기 전에는 코드로 만들지 않는다.
+
+### Not Yet Decided
+
+- Code Explorer: Target 디렉터리의 파일 목록과 내용을 MCP Tool로 수집하는 주체.
+  AgentRunner 밖에서 Tool을 실행하게 되므로 ADR-002와의 관계를 함께 결정해야 한다.
+- Work Unit 실행: Work Unit마다 Agent를 실행하고 결과를 하나의 Report로 합치는 흐름, 최대 Context 크기 설정값.
+- 따라서 현재 CLI/Agent 실행 흐름은 이 ADR 시점에는 변경하지 않았다. 클래스별 실행은 ADR-013에서 연결했다.
+
+### Reason
+
+- 분석 범위 결정은 Agent의 판단(다음 행동 결정)이나 LLM 호출과 다른 책임이며, 크기 한도 때문에 반드시 필요해진다.
+- 코드를 잘라 전달하면 LLM이 존재하지 않는 문제를 지적하거나 실제 문제를 놓칠 수 있으므로, 원문을 유지하고 묶는 방식만 조정한다.
+- 묶는 기준은 프로젝트와 분석 목적에 따라 달라질 수 있으므로 교체 지점을 두되, V1은 가장 단순한 기준(패키지)만 구현한다.
+
+---
+
+## ADR-013: 클래스 하나씩 분석하고 Java 객체로 모은다
+
+### Decision
+
+CLI의 Code Quality 분석은 Java 파일 하나를 한 번의 LLM 요청으로 분석한다.
+
+```text
+CLI
+  → McpJavaSourceExplorer (search_files / read_text_file, ToolPermissionPolicy 확인)
+  → ClassAnalysisCoordinator
+       → 파일마다 AgentRunner.run(ClassCodeQualityAgent)
+            → Llm 한 번 (원문 전체, Tool 선택 없음)
+            → ClassAnalysisParser → ClassAnalysisResult
+       → ClassAnalysisCollector
+  → AnalysisReport (LLM 호출 없이 텍스트로 렌더링)
+```
+
+- 파일 탐색은 LLM 판단이 아니므로 AgentRunner의 Tool 루프 밖에서 기존 MCP Tool로 수행한다. 실행 전 권한 검사는 AgentRunner와 같은 정책을 쓴다.
+- 분석 요청에는 그 클래스의 원문만 넣는다. 이전 클래스의 원문과 Tool 정의는 넣지 않는다. 코드는 자르거나 요약하지 않는다.
+- 설정된 문자 수를 넘는 파일은 LLM에 보내지 않고 UNSUPPORTED로 기록한다.
+- 한 클래스의 실패(LLM 오류, 잘못된 JSON, 파일 읽기 실패)는 그 결과만 FAILED로 남기고 다음 클래스를 계속한다.
+- 같은 경로의 파일은 한 번만 분석한다. 같은 클래스 안에서 제목과 근거가 같은 이슈만 한 번 남긴다.
+- 하나 이상 성공하면 CLI는 성공으로 끝낸다. 대상이 없거나 모두 실패하면 실패로 끝낸다. 어느 쪽이든 보고서는 출력한다.
+- 기존 CodeQualityAgent의 Tool 선택 루프는 그대로 둔다. 이 흐름은 클래스 분석 전용 Agent를 AgentRunner에 넣어 재사용한다.
+- 실행 사이의 저장과 재개는 ADR-014를 따른다. 한 클래스 안에서는 여전히 Collector에 모은 뒤 저장한다.
+
+### Reason
+
+- 분석 단위를 클래스로 고정하면 호출마다 맥락이 커지지 않고, 결과도 클래스별로 남길 수 있다.
+- 파일 목록을 LLM이 고르게 하면 같은 파일을 반복해서 읽거나 빠뜨릴 수 있다.
+- 보고서 문장은 수집된 객체에서 결정적으로 만들 수 있으므로 마지막에 LLM을 한 번 더 부르지 않는다.
+
+---
+
+## ADR-014: 클래스 분석 결과를 저장하고 이어서 재개한다
+
+### Decision
+
+클래스별 분석 결과는 H2 파일 데이터베이스에 저장한다. 실행 중 저장소는 `./data/agent-harness`이고, 테스트는 메모리 데이터베이스를 쓴다.
+
+작업의 신원은 정규화한 대상 경로, objective 문자열, 설정 지문(원문 길이 한도, 모델 이름, 검색 Tool 이름, 읽기 Tool 이름)이다. 셋 중 하나라도 다르면 새 작업이다.
+
+- 클래스 `SUCCEEDED`는 다시 분석하지 않는다. `UNSUPPORTED`와 재개할 수 없는 `FAILED`도 다시 분석하지 않는다.
+- 프로세스가 죽어서 남은 `RUNNING`은 다음 실행에서 `PENDING`으로 되돌린 뒤 분석한다.
+- 네트워크, 429, 5xx, 인증, 저장 실패는 같은 작업을 다시 실행할 때 그 클래스만 재개한다. 이번 호출 안의 재시도는 기존 RetryingLlm이 담당한다.
+- 인증 오류는 남은 클래스를 진행하지 않고 작업을 `FAILED`로 둔다. 이미 저장된 성공 결과는 유지한다.
+- 모든 클래스가 성공하면 작업은 `COMPLETED`다. 실행이 끝났지만 실패하거나 지원하지 않는 클래스가 있으면 `PARTIALLY_COMPLETED`다. 저장된 보고서는 다시 분석하지 않고 출력한다.
+- 클래스 결과와 성공 상태 변경은 하나의 짧은 트랜잭션이다. LLM 호출과 재시도 대기는 트랜잭션 밖에 있다.
+- 원문과 API 키는 저장하지 않는다. 재개할 때는 MCP로 원문을 다시 읽는다.
+- 같은 작업의 중복 실행은 데이터베이스 트랜잭션 밖에서 운영체제 파일 잠금으로 막는다. 잠금을 얻지 못하면 분석을 시작하지 않는다.
+
+### Reason
+
+- 인증 오류나 프로세스 중단 뒤에 성공한 클래스를 다시 분석하지 않아야 한다.
+- 작업 신원에 설정이 들어가야 모델이나 길이 한도가 바뀌었을 때 이전 결과와 섞이지 않는다.
+- 분석 호출을 트랜잭션 안에 두면 연결을 오래 붙잡고, 재시도 대기 동안 잠금이 유지된다.
 
 ---
 

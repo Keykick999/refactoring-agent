@@ -1,6 +1,11 @@
 package com.aicompany.agentharness.config;
 
 import com.aicompany.agentharness.agent.CodeQualityAgent;
+import com.aicompany.agentharness.analysis.AnalysisJobStore;
+import com.aicompany.agentharness.analysis.AnalysisSettings;
+import com.aicompany.agentharness.analysis.ClassAnalysisCoordinator;
+import com.aicompany.agentharness.analysis.JavaSourceExplorer;
+import com.aicompany.agentharness.analysis.McpJavaSourceExplorer;
 import com.aicompany.agentharness.harness.AgentRunner;
 import com.aicompany.agentharness.llm.Llm;
 import com.aicompany.agentharness.llm.RetrySleeper;
@@ -19,6 +24,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -98,6 +104,22 @@ public class AgentHarnessConfiguration {
 		}
 		log.info("LLM retry is enabled: {}", retryProperties);
 		return new RetryingLlm(geminiLlm, retryProperties.toPolicy(), RetrySleeper.THREAD_SLEEP);
+	}
+
+	@Bean
+	public JavaSourceExplorer javaSourceExplorer(ToolRegistry toolRegistry, ToolPermissionPolicy toolPermissionPolicy,
+			AgentHarnessProperties properties) {
+		return new McpJavaSourceExplorer(toolRegistry, toolPermissionPolicy, properties.classAnalysis());
+	}
+
+	@Bean
+	public ClassAnalysisCoordinator classAnalysisCoordinator(JavaSourceExplorer javaSourceExplorer, Llm llm,
+			AgentRunner agentRunner, AgentHarnessProperties properties, GeminiProperties geminiProperties,
+			AnalysisJobStore analysisJobStore) {
+		AgentHarnessProperties.ClassAnalysis classAnalysis = properties.classAnalysis();
+		AnalysisSettings settings = new AnalysisSettings(classAnalysis.maxSourceCharacters(), geminiProperties.model(),
+				classAnalysis.searchTool(), classAnalysis.readTool());
+		return new ClassAnalysisCoordinator(javaSourceExplorer, llm, agentRunner, settings, analysisJobStore, Path.of("data", "locks"));
 	}
 
 	@Bean

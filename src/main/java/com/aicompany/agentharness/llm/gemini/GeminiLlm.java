@@ -1,6 +1,7 @@
 package com.aicompany.agentharness.llm.gemini;
 
 import com.aicompany.agentharness.llm.Llm;
+import com.aicompany.agentharness.llm.LlmErrorCategory;
 import com.aicompany.agentharness.llm.LlmException;
 import com.aicompany.agentharness.llm.LlmRequest;
 import com.aicompany.agentharness.llm.LlmResponse;
@@ -57,7 +58,8 @@ public class GeminiLlm implements Llm {
 	@Override
 	public LlmResponse generate(LlmRequest request) {
 		if (apiKey == null || apiKey.isBlank()) {
-			throw new LlmException("Gemini API key is not configured. Set the GEMINI_API_KEY environment variable.");
+			throw new LlmException("Gemini API key is not configured. Set the GEMINI_API_KEY environment variable.",
+					LlmErrorCategory.AUTHENTICATION);
 		}
 		String responseBody = send(toGeminiRequest(request));
 		return new LlmResponse(extractText(responseBody));
@@ -123,10 +125,24 @@ public class GeminiLlm implements Llm {
 	private LlmException httpError(HttpResponse<String> httpResponse) {
 		int statusCode = httpResponse.statusCode();
 		String message = "Gemini API request failed with HTTP " + statusCode + ": " + extractErrorMessage(httpResponse.body());
-		if (!RETRYABLE_STATUS_CODES.contains(statusCode)) {
-			return new LlmException(message);
+		if (statusCode == 401 || statusCode == 403) {
+			return new LlmException(message, LlmErrorCategory.AUTHENTICATION);
 		}
-		return new RetryableLlmException(message, retryAfter(httpResponse));
+		if (statusCode == 400 && looksLikeTokenLimit(httpResponse.body())) {
+			return new LlmException(message, LlmErrorCategory.TOKEN_LIMIT);
+		}
+		if (statusCode == 429) {
+			return new RetryableLlmException(message, LlmErrorCategory.RATE_LIMIT, retryAfter(httpResponse));
+		}
+		if (RETRYABLE_STATUS_CODES.contains(statusCode)) {
+			return new RetryableLlmException(message, LlmErrorCategory.SERVER, retryAfter(httpResponse));
+		}
+		return new LlmException(message, LlmErrorCategory.UNEXPECTED);
+	}
+
+	private boolean looksLikeTokenLimit(String body) {
+		String normalized = body == null ? "" : body.toLowerCase();
+		return normalized.contains("token") || normalized.contains("context length") || normalized.contains("too large");
 	}
 
 	/**

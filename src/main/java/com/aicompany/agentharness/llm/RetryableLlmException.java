@@ -10,17 +10,21 @@ public class RetryableLlmException extends LlmException {
 
 	private final Duration retryAfter;
 
-	/**
-	 * @param retryAfter Provider가 요청한 대기 시간. 알 수 없으면 null.
-	 */
 	public RetryableLlmException(String message, Duration retryAfter) {
-		super(message);
-		this.retryAfter = retryAfter;
+		this(message, LlmErrorCategory.RATE_LIMIT, retryAfter, null);
 	}
 
 	public RetryableLlmException(String message, Throwable cause) {
-		super(message, cause);
-		this.retryAfter = null;
+		this(message, LlmErrorCategory.NETWORK, null, cause);
+	}
+
+	public RetryableLlmException(String message, LlmErrorCategory category, Duration retryAfter) {
+		this(message, category, retryAfter, null);
+	}
+
+	private RetryableLlmException(String message, LlmErrorCategory category, Duration retryAfter, Throwable cause) {
+		super(message, category, cause);
+		this.retryAfter = retryAfter;
 	}
 
 	public Optional<Duration> retryAfter() {

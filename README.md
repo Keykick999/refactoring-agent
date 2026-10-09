@@ -9,6 +9,18 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 > 현재 MVP는 Agent 실행 루프, MCP Server를 통한 Tool 실행,
 > Gemini LLM이 Tool 목록을 보고 다음 행동을 결정하는 흐름까지 구현되어 있습니다.
 
+## 범위
+
+저장소 이름(`refactoring-agent`)은 장기 목표인 자동 리팩토링을 나타냅니다. 현재 V1이 수행하는 기능은 Code Quality Analysis입니다.
+
+- **V1: Read-only Code Quality Agent (Code Quality Analysis)**
+  - 지정된 코드를 탐색·분석하여 Code Quality Issue와 Improvement Plan을 Report로 제시합니다.
+  - 소스 코드 파일은 수정하지 않습니다(파일을 변경하는 Tool은 Tool Permission Policy로 거부).
+- **V2 이상: Code Modification (Automated Code Refactoring)**
+  - 코드 수정 → 테스트 → 검증 → 리뷰 → 반복 개선. 구체적인 설계는 아직 확정하지 않았습니다.
+
+자세한 범위는 [`harness/docs/requirements.md`](harness/docs/requirements.md)와 ADR-011을 참고하세요.
+
 ## 기술 스택
 
 - Java 17
@@ -17,6 +29,7 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 - JUnit 5
 - Jackson 3 (MCP JSON-RPC, Gemini API, LLM 응답 JSON 처리)
 - Gemini API (JDK HttpClient로 호출)
+- H2와 Spring Data JPA (클래스별 분석 결과 저장)
 
 ## 패키지 구조
 
@@ -24,6 +37,9 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 com.aicompany.agentharness
 ├── agent    # 개별 Agent (예: Code Quality Agent)
 ├── harness  # Agent 실행 흐름 관리
+├── analysis # 클래스별 분석, 작업 저장, 재개
+├── persistence # H2에 분석 작업과 클래스 결과를 저장
+├── context  # 분석 작업 단위(Work Unit) 계획 (아직 실행 흐름에 연결되지 않음)
 ├── llm      # LLM 연동 추상화
 │   └── gemini  # Gemini 구현체 (GeminiLlm)
 ├── tool     # Harness Tool 추상화와 ToolRegistry
@@ -42,8 +58,8 @@ JDK 17이 로컬에 없으면 Gradle toolchain이 자동으로 내려받습니�
 # 빌드 + 테스트 (Fake MCP Server 사용, Node.js 불필요)
 ./gradlew build
 
-# Code Quality Agent 실행 (아래 "CLI 실행" 참고)
-./gradlew bootRun --args="--target=src/main/java/com/aicompany/agentharness/harness/Task.java"
+# Code Quality Agent 실행 (아래 "CLI 실행" 참고). target은 workspace(src) 기준 경로
+./gradlew bootRun --args="--target=main/java/com/aicompany/agentharness/harness/Task.java"
 ```
 
 Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.
@@ -55,16 +71,27 @@ Node.js(Filesystem MCP Server)와 `GEMINI_API_KEY`가 필요합니다.
 
 | 인자 | 필수 | 설명 |
 | --- | --- | --- |
-| `--target` | O | 분석할 파일. 상대 경로는 MCP workspace 기준 |
+| `--target` | O | 분석할 Java 파일 또는 디렉터리. 상대 경로는 MCP workspace(기본 `src`) 기준. 디렉터리면 안의 Java 파일을 클래스마다 하나씩 분석한다 |
 | `--objective` | X | 작업 목적. 생략하면 기본 코드 품질 분석 목적 사용 |
 
 ```bash
-./gradlew bootRun --args="--target=src/main/java/com/aicompany/agentharness/harness/Task.java --objective='Review the code quality'"
+./gradlew bootRun --args="--target=main/java/com/aicompany/agentharness/harness/Task.java --objective='Review the code quality'"
 
-# 또는 jar로 실행
+# 또는 jar로 실행 (workspace `src`는 실행 디렉터리 기준이므로 프로젝트 루트에서 실행)
 ./gradlew bootJar
-java -jar build/libs/agent-harness-0.0.1-SNAPSHOT.jar --target=src/Main.java
+java -jar build/libs/agent-harness-0.0.1-SNAPSHOT.jar --target=main/java/com/aicompany/agentharness/harness/Task.java
 ```
+
+`--target` 경로 규칙:
+
+- 상대 경로는 **MCP workspace(기본 `src`) 기준**으로만 해석합니다. 프로젝트 루트 기준으로 해석하지 않습니다.
+- 절대 경로는 workspace 안에 있을 때만 허용합니다.
+- 다음 경우에는 Agent(LLM)를 실행하지 않고 오류 메시지와 함께 종료 코드 `2`로 끝납니다.
+  - workspace 밖을 가리키는 경로(`../build.gradle`, workspace 밖 절대 경로, workspace 밖을 가리키는 symlink)
+  - 존재하지 않는 경로
+- `--target=src/main/...`처럼 프로젝트 루트 기준으로 쓰면 `src/src/main/...`으로 해석되어 존재하지 않으므로 거부되며,
+  앞의 `src/`를 빼라는 안내가 출력됩니다. 두 기준을 섞어 자동으로 보정하지 않습니다.
+- CLI의 검사는 잘못된 입력을 미리 알리기 위한 것이며, 파일 접근 제한의 최종 책임은 MCP Server에 있습니다.
 
 출력 예:
 
@@ -83,7 +110,10 @@ Summary:
 ========================================
 ```
 
-종료 코드: `0` 성공, `1` Agent 실패(FINISH 실패, 최대 step 초과, 실행 중 오류), `2` 인자 오류.
+종료 코드: `0` 하나 이상의 클래스 분석 성공, `1` 분석 대상이 없거나 모든 클래스가 실패, `2` 인자 오류(잘못된 `--target` 포함).
+일부 클래스만 실패해도 나머지는 계속 분석하며, 실패 사유는 같은 보고서에 남습니다.
+같은 대상 경로, 같은 `--objective`, 같은 분석 설정으로 다시 실행하면 이미 끝난 클래스는 저장된 보고서를 쓰고, 아직 끝나지 않았거나 일시적으로 실패한 클래스만 이어서 분석합니다. 인증 오류로 작업이 멈춰도 그 전에 성공한 클래스는 남습니다. 완료된 작업을 처음부터 다시 분석하는 옵션은 없습니다.
+분석 결과는 실행 디렉터리의 `data/`에 저장됩니다. 이 디렉터리는 Git에 포함하지 않습니다. 같은 작업의 중복 실행은 `data/locks`의 파일 잠금으로 막습니다.
 `bootRun`은 0이 아닌 종료 코드를 Gradle 빌드 실패로 표시합니다.
 대상 파일 접근 범위는 MCP Server의 workspace 설정으로 제한됩니다.
 
@@ -103,13 +133,17 @@ agent-harness:
   filesystem-mcp-server:
     enabled: true
     command: [npx, -y, "@modelcontextprotocol/server-filesystem@2026.8.31"]
-    workspace: .      # 서버가 접근을 허용할 유일한 디렉터리
+    workspace: src    # 서버가 접근을 허용할 유일한 디렉터리
     timeout: 30s
 ```
 
 - Harness는 `command` 뒤에 `workspace`의 절대 경로를 붙여 서버를 실행합니다.
   서버는 이 디렉터리 밖의 경로 접근을 거부합니다.
   상대 경로는 애플리케이션 실행 디렉터리 기준입니다.
+- 기본 workspace는 프로젝트의 `src`입니다. `.git`, `build`, `gradle`, `build.gradle`, `.env` 등
+  프로젝트 루트의 파일은 Agent가 MCP Tool로 읽을 수 없습니다.
+- API Key 같은 민감한 정보는 파일이 아닌 환경변수(`GEMINI_API_KEY`)로만 주입합니다.
+  workspace(`src`) 안에 비밀 값이 담긴 파일을 두지 마세요.
 - Windows에서는 `npx`가 `.cmd` 스크립트이므로 Harness가 `cmd /c`를 앞에 붙여 실행합니다.
 - 다른 디렉터리를 분석하려면 실행 시 workspace를 지정합니다.
 

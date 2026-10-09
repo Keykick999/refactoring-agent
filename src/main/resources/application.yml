@@ -3,6 +3,15 @@ spring:
     name: agent-harness
   main:
     banner-mode: off
+  datasource:
+    url: "jdbc:h2:file:./data/agent-harness;DB_CLOSE_ON_EXIT=FALSE"
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: update
 
 agent-harness:
   max-steps: 10
@@ -13,7 +22,8 @@ agent-harness:
       - -y
       - "@modelcontextprotocol/server-filesystem@2026.8.31"
     # MCP Server가 접근을 허용할 유일한 디렉터리. 이 디렉터리 밖의 경로는 서버가 거부한다.
-    workspace: .
+    # 프로젝트 루트(.git, build, gradle 설정 등)를 노출하지 않도록 소스 디렉터리로 제한한다. 실행 디렉터리 기준이다.
+    workspace: src
     timeout: 30s
   # Agent에게 공개하고 실행을 허용할 Tool. allowed에 있고 denied에 없는 Tool만 허용한다.
   # allowed가 비어 있으면 어떤 Tool도 허용하지 않는다. Code Quality Agent V1은 분석 전용이므로 읽기/탐색 Tool만 허용한다.
@@ -32,6 +42,11 @@ agent-harness:
       - edit_file
       - create_directory
       - move_file
+  # 클래스 하나의 원문을 한 번의 LLM 요청으로 분석한다. 한도를 넘는 파일은 자르지 않고 분석하지 않는다.
+  class-analysis:
+    max-source-characters: 100000
+    search-tool: search_files
+    read-tool: read_text_file
 
 logging:
   level:

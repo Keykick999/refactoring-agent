@@ -1,5 +1,6 @@
 package com.aicompany.agentharness.llm.gemini;
 
+import com.aicompany.agentharness.llm.LlmErrorCategory;
 import com.aicompany.agentharness.llm.LlmException;
 import com.aicompany.agentharness.llm.LlmRequest;
 import com.aicompany.agentharness.llm.LlmResponse;
@@ -70,7 +71,9 @@ class GeminiLlmRetryTest {
 				.isInstanceOf(LlmException.class)
 				.hasMessageContaining("after 3 attempts")
 				.hasMessageContaining("HTTP 429")
-				.hasMessageNotContaining("test-api-key");
+				.hasMessageNotContaining("test-api-key")
+				.extracting(thrown -> ((LlmException) thrown).category())
+				.isEqualTo(LlmErrorCategory.RATE_LIMIT);
 		assertThat(server.requestCount()).isEqualTo(3);
 		assertThat(sleeps).containsExactly(Duration.ofSeconds(1), Duration.ofSeconds(2));
 	}
@@ -139,8 +142,34 @@ class GeminiLlmRetryTest {
 				.isInstanceOf(LlmException.class)
 				.hasMessageContaining("after 3 attempts")
 				.hasMessageContaining("Failed to call Gemini API")
-				.hasRootCauseInstanceOf(IOException.class);
+				.hasRootCauseInstanceOf(IOException.class)
+				.extracting(thrown -> ((LlmException) thrown).category())
+				.isEqualTo(LlmErrorCategory.NETWORK);
 		assertThat(sleeps).hasSize(2);
+	}
+
+	@Test
+	void classifiesAuthenticationWithoutRetry() {
+		server = FakeGeminiServer.start(error(401, "API key not valid"), text("ok"));
+
+		assertThatThrownBy(() -> retryingLlm().generate(REQUEST))
+				.isInstanceOf(LlmException.class)
+				.isNotInstanceOf(RetryableLlmException.class)
+				.extracting(thrown -> ((LlmException) thrown).category())
+				.isEqualTo(LlmErrorCategory.AUTHENTICATION);
+		assertThat(server.requestCount()).isEqualTo(1);
+	}
+
+	@Test
+	void classifiesTokenLimitWithoutRetry() {
+		server = FakeGeminiServer.start(error(400, "the input exceeds the context length"), text("ok"));
+
+		assertThatThrownBy(() -> retryingLlm().generate(REQUEST))
+				.isInstanceOf(LlmException.class)
+				.isNotInstanceOf(RetryableLlmException.class)
+				.extracting(thrown -> ((LlmException) thrown).category())
+				.isEqualTo(LlmErrorCategory.TOKEN_LIMIT);
+		assertThat(server.requestCount()).isEqualTo(1);
 	}
 
 	private RetryingLlm retryingLlm() {
