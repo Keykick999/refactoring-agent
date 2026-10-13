@@ -38,6 +38,7 @@ com.aicompany.agentharness
 ├── agent    # 개별 Agent (예: Code Quality Agent)
 ├── harness  # Agent 실행 흐름 관리
 ├── analysis # 클래스별 분석, 작업 저장, 재개
+├── graph    # Java AST에서 추출한 클래스 관계 그래프
 ├── persistence # H2에 분석 작업과 클래스 결과를 저장
 ├── context  # 분석 작업 단위(Work Unit) 계획 (아직 실행 흐름에 연결되지 않음)
 ├── llm      # LLM 연동 추상화
