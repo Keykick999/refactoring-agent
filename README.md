@@ -39,6 +39,7 @@ com.aicompany.agentharness
 ├── harness  # Agent 실행 흐름 관리
 ├── analysis # 클래스별 분석, 작업 저장, 재개
 ├── graph    # Java AST에서 추출한 클래스 관계 그래프
+├── plan     # 계획 기반 문제 분해와 작업 실행
 ├── persistence # H2에 분석 작업과 클래스 결과를 저장
 ├── context  # 분석 작업 단위(Work Unit) 계획 (아직 실행 흐름에 연결되지 않음)
 ├── llm      # LLM 연동 추상화
@@ -74,6 +75,8 @@ Node.js(Filesystem MCP Server)와 `GEMINI_API_KEY`가 필요합니다.
 | --- | --- | --- |
 | `--target` | O | 분석할 Java 파일 또는 디렉터리. 상대 경로는 MCP workspace(기본 `src`) 기준. 디렉터리면 안의 Java 파일을 클래스마다 하나씩 분석한다 |
 | `--objective` | X | 작업 목적. 생략하면 기본 코드 품질 분석 목적 사용 |
+| `--mode` | X | `class`(기본)는 파일마다 분석한다. `plan`은 목표를 작업으로 나누어 저장하고 이어서 수행한다 |
+| `--style` | X | `--mode=plan`일 때 분석 관점. `GENERAL`, `SOLID`, `LAYERED_ARCHITECTURE` |
 
 ```bash
 ./gradlew bootRun --args="--target=main/java/com/aicompany/agentharness/harness/Task.java --objective='Review the code quality'"

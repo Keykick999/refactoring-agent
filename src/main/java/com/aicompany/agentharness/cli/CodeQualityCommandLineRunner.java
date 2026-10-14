@@ -6,11 +6,17 @@ import com.aicompany.agentharness.config.AgentHarnessProperties;
 import com.aicompany.agentharness.harness.AgentResult;
 import com.aicompany.agentharness.harness.Target;
 import com.aicompany.agentharness.harness.Task;
+import com.aicompany.agentharness.plan.AnalysisRequest;
+import com.aicompany.agentharness.plan.AnalysisStyle;
+import com.aicompany.agentharness.plan.EnforcementMode;
+import com.aicompany.agentharness.plan.FinalAnalysisResult;
+import com.aicompany.agentharness.plan.ProblemSolvingCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.ExitCodeGenerator;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.stereotype.Component;
 
@@ -35,14 +41,24 @@ public class CodeQualityCommandLineRunner implements ApplicationRunner, ExitCode
 	private static final Logger log = LoggerFactory.getLogger(CodeQualityCommandLineRunner.class);
 	private static final String OBJECTIVE_OPTION = "objective";
 	private static final String TARGET_OPTION = "target";
+	private static final String MODE_OPTION = "mode";
+	private static final String STYLE_OPTION = "style";
 	private static final String SEPARATOR = "=".repeat(40);
 
 	private final ClassAnalysisCoordinator classAnalysisCoordinator;
+	private final ProblemSolvingCoordinator problemSolvingCoordinator;
 	private final Path workspaceDirectory;
 	private int exitCode = EXIT_SUCCESS;
 
 	public CodeQualityCommandLineRunner(ClassAnalysisCoordinator classAnalysisCoordinator, AgentHarnessProperties properties) {
+		this(classAnalysisCoordinator, properties, null);
+	}
+
+	@Autowired
+	public CodeQualityCommandLineRunner(ClassAnalysisCoordinator classAnalysisCoordinator, AgentHarnessProperties properties,
+			ProblemSolvingCoordinator problemSolvingCoordinator) {
 		this.classAnalysisCoordinator = classAnalysisCoordinator;
+		this.problemSolvingCoordinator = problemSolvingCoordinator;
 		this.workspaceDirectory = properties.filesystemMcpServer().workspaceDirectory();
 	}
 
@@ -68,7 +84,20 @@ public class CodeQualityCommandLineRunner implements ApplicationRunner, ExitCode
 
 		String objective = singleOptionValue(arguments, OBJECTIVE_OPTION).orElse(DEFAULT_OBJECTIVE);
 		Task task = new Task(objective, new Target(targetPath));
-		AgentResult agentResult = analyze(task);
+		String mode = singleOptionValue(arguments, MODE_OPTION).orElse("class");
+		AgentResult agentResult;
+		if ("plan".equalsIgnoreCase(mode)) {
+			agentResult = analyzePlan(task, arguments);
+		}
+		else if ("class".equalsIgnoreCase(mode)) {
+			agentResult = analyze(task);
+		}
+		else {
+			System.out.println("\nInvalid --mode: " + mode);
+			printUsage();
+			exitCode = EXIT_USAGE_ERROR;
+			return;
+		}
 		printResult(task, agentResult);
 		exitCode = agentResult.success() ? EXIT_SUCCESS : EXIT_AGENT_FAILURE;
 	}
@@ -126,6 +155,25 @@ public class CodeQualityCommandLineRunner implements ApplicationRunner, ExitCode
 		return Optional.of(values.get(0).strip());
 	}
 
+	private AgentResult analyzePlan(Task task, ApplicationArguments arguments) {
+		if (problemSolvingCoordinator == null) {
+			return AgentResult.failure("Plan-based analysis is not available.");
+		}
+		try {
+			AnalysisStyle style = AnalysisStyle.valueOf(singleOptionValue(arguments, STYLE_OPTION).orElse("GENERAL"));
+			FinalAnalysisResult result = problemSolvingCoordinator.solve(
+					new AnalysisRequest(task.target().path(), task.goal(), style, EnforcementMode.ADVISORY));
+			return result.complete() ? AgentResult.success(result.render()) : AgentResult.failure(result.render());
+		}
+		catch (IllegalArgumentException exception) {
+			return AgentResult.failure("Invalid --style: " + exception.getMessage());
+		}
+		catch (RuntimeException exception) {
+			log.error("Plan-based analysis failed unexpectedly", exception);
+			return AgentResult.failure("Agent execution failed unexpectedly: " + exception.getMessage());
+		}
+	}
+
 	private AgentResult analyze(Task task) {
 		try {
 			AnalysisReport report = classAnalysisCoordinator.analyze(task);
@@ -161,11 +209,13 @@ public class CodeQualityCommandLineRunner implements ApplicationRunner, ExitCode
 	private void printUsage() {
 		System.out.println("""
 
-				Usage: ./gradlew bootRun --args="--target=<file> [--objective=<text>]"
+				Usage: ./gradlew bootRun --args="--target=<file> [--objective=<text>] [--mode=class|plan]"
 
 				  --target     Java file or directory to analyze (required), relative to the workspace: %s
 				               Example: --target=main/java/com/example
 				  --objective  Task objective (default: "%s")
+				  --mode       class (default) analyzes each Java file. plan decomposes the objective into stored tasks.
+				  --style      analysis style for --mode=plan (default: GENERAL)
 				""".formatted(workspaceDirectory, DEFAULT_OBJECTIVE));
 	}
 

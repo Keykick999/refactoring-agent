@@ -7,6 +7,8 @@ import com.aicompany.agentharness.analysis.ClassAnalysisCoordinator;
 import com.aicompany.agentharness.analysis.JavaSourceExplorer;
 import com.aicompany.agentharness.analysis.McpJavaSourceExplorer;
 import com.aicompany.agentharness.harness.AgentRunner;
+import com.aicompany.agentharness.plan.PlanStore;
+import com.aicompany.agentharness.plan.ProblemSolvingCoordinator;
 import com.aicompany.agentharness.llm.Llm;
 import com.aicompany.agentharness.llm.RetrySleeper;
 import com.aicompany.agentharness.llm.RetryingLlm;
@@ -30,7 +32,8 @@ import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnBooleanProperty("agent-harness.filesystem-mcp-server.enabled")
-@EnableConfigurationProperties({AgentHarnessProperties.class, GeminiProperties.class, LlmRetryProperties.class})
+@EnableConfigurationProperties({AgentHarnessProperties.class, GeminiProperties.class, LlmRetryProperties.class,
+		ProblemSolvingProperties.class})
 public class AgentHarnessConfiguration {
 
 	private static final Logger log = LoggerFactory.getLogger(AgentHarnessConfiguration.class);
@@ -125,6 +128,14 @@ public class AgentHarnessConfiguration {
 	@Bean
 	public CodeQualityAgent codeQualityAgent(Llm llm, ToolRegistry toolRegistry, ToolPermissionPolicy toolPermissionPolicy) {
 		return new CodeQualityAgent(llm, toolPermissionPolicy.allowedToolDefinitions(toolRegistry.toolDefinitions()));
+	}
+
+	@Bean
+	public ProblemSolvingCoordinator problemSolvingCoordinator(Llm llm, ToolRegistry toolRegistry,
+			AgentHarnessProperties properties, ProblemSolvingProperties problemSolvingProperties, PlanStore planStore) {
+		return new ProblemSolvingCoordinator(llm, toolRegistry, properties.tools().allowed(), properties.tools().denied(),
+				planStore, Path.of("data", "locks"), problemSolvingProperties.maxSolverSteps(),
+				problemSolvingProperties.maxPlanIterations(), problemSolvingProperties.maxFinalCheckRounds());
 	}
 
 	private List<String> createServerCommand(AgentHarnessProperties.FilesystemMcpServer serverProperties) {

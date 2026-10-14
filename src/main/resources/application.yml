@@ -47,6 +47,10 @@ agent-harness:
     max-source-characters: 100000
     search-tool: search_files
     read-tool: read_text_file
+  problem-solving:
+    max-solver-steps: 8
+    max-plan-iterations: 20
+    max-final-check-rounds: 3
 
 logging:
   level:
