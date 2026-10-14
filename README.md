@@ -6,8 +6,8 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 
 첫 번째 Agent로는 코드의 품질을 점검하고 개선점을 제안하는 **Code Quality Agent**를 구현하고 있습니다.
 
-> 현재 MVP는 Agent 실행 루프, MCP Server를 통한 Tool 실행,
-> Gemini LLM이 Tool 목록을 보고 다음 행동을 결정하는 흐름까지 구현되어 있습니다.
+> 현재는 클래스 단위 Code Quality 분석, AST 기반 코드 관계 그래프,
+> 목표를 Task로 나눠 저장하고 이어서 수행하는 계획 기반 실행까지 구현되어 있습니다.
 
 ## 범위
 
@@ -15,11 +15,13 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 
 - **V1: Read-only Code Quality Agent (Code Quality Analysis)**
   - 지정된 코드를 탐색·분석하여 Code Quality Issue와 Improvement Plan을 Report로 제시합니다.
+  - 기본 CLI(`--mode=class`)는 Java 파일을 하나씩 분석합니다.
+  - `--mode=plan`은 목표를 Task로 분해하고, Graph/MCP로 필요한 정보만 모은 뒤 작업 결과를 저장하면서 이어서 수행합니다.
   - 소스 코드 파일은 수정하지 않습니다(파일을 변경하는 Tool은 Tool Permission Policy로 거부).
 - **V2 이상: Code Modification (Automated Code Refactoring)**
   - 코드 수정 → 테스트 → 검증 → 리뷰 → 반복 개선. 구체적인 설계는 아직 확정하지 않았습니다.
 
-자세한 범위는 [`harness/docs/requirements.md`](harness/docs/requirements.md)와 ADR-011을 참고하세요.
+자세한 범위는 [`harness/docs/requirements.md`](harness/docs/requirements.md), ADR-011, ADR-015를 참고하세요.
 
 ## 기술 스택
 
@@ -29,7 +31,8 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 - JUnit 5
 - Jackson 3 (MCP JSON-RPC, Gemini API, LLM 응답 JSON 처리)
 - Gemini API (JDK HttpClient로 호출)
-- H2와 Spring Data JPA (클래스별 분석 결과 저장)
+- H2와 Spring Data JPA (클래스 분석 결과와 계획 기반 Task 저장)
+- JavaParser Symbol Solver (프로젝트 내부 타입의 구조적 관계 추출)
 
 ## 패키지 구조
 
@@ -40,13 +43,13 @@ com.aicompany.agentharness
 ├── analysis # 클래스별 분석, 작업 저장, 재개
 ├── graph    # Java AST에서 추출한 클래스 관계 그래프
 ├── plan     # 계획 기반 문제 분해와 작업 실행
-├── persistence # H2에 분석 작업과 클래스 결과를 저장
+├── persistence # H2에 클래스 분석 결과와 계획/Task 결과를 저장
 ├── context  # 분석 작업 단위(Work Unit) 계획 (아직 실행 흐름에 연결되지 않음)
 ├── llm      # LLM 연동 추상화
 │   └── gemini  # Gemini 구현체 (GeminiLlm)
 ├── tool     # Harness Tool 추상화와 ToolRegistry
 ├── mcp      # MCP Client와 MCP Tool Adapter
-├── cli      # 터미널 실행 진입점 (인자 → Task → AgentRunner)
+├── cli      # 터미널 실행 진입점 (인자 → 클래스 분석 또는 계획 기반 실행)
 └── config   # Spring 설정 (MCP Server 실행, Tool 등록, LLM/Agent 구성)
 ```
 
@@ -68,18 +71,25 @@ Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.
 
 ## CLI 실행
 
-실행 인자를 Task로 변환해 AgentRunner로 CodeQualityAgent를 실행하고, 최종 결과를 출력합니다.
+실행 인자를 Task로 변환해 분석을 돌리고, 최종 결과를 출력합니다.
 Node.js(Filesystem MCP Server)와 `GEMINI_API_KEY`가 필요합니다.
+
+기본 `--mode=class`는 Java 파일을 하나씩 AgentRunner로 분석합니다.
+`--mode=plan`은 목표를 Task로 분해한 뒤, 실행 가능한 작업을 하나씩 처리하고 필요할 때 계획을 고칩니다.
 
 | 인자 | 필수 | 설명 |
 | --- | --- | --- |
-| `--target` | O | 분석할 Java 파일 또는 디렉터리. 상대 경로는 MCP workspace(기본 `src`) 기준. 디렉터리면 안의 Java 파일을 클래스마다 하나씩 분석한다 |
+| `--target` | O | 분석할 Java 파일 또는 디렉터리. 상대 경로는 MCP workspace(기본 `src`) 기준 |
 | `--objective` | X | 작업 목적. 생략하면 기본 코드 품질 분석 목적 사용 |
 | `--mode` | X | `class`(기본)는 파일마다 분석한다. `plan`은 목표를 작업으로 나누어 저장하고 이어서 수행한다 |
 | `--style` | X | `--mode=plan`일 때 분석 관점. `GENERAL`, `SOLID`, `LAYERED_ARCHITECTURE` |
 
 ```bash
+# 클래스 단위 분석 (기본)
 ./gradlew bootRun --args="--target=main/java/com/aicompany/agentharness/harness/Task.java --objective='Review the code quality'"
+
+# 계획 기반 분석. style은 작업 분해 가이드이며, SOLID 규칙을 코드로 검사하지는 않는다
+./gradlew bootRun --args="--target=main/java --mode=plan --style=SOLID --objective='Analyze whether this code follows SOLID'"
 
 # 또는 jar로 실행 (workspace `src`는 실행 디렉터리 기준이므로 프로젝트 루트에서 실행)
 ./gradlew bootJar
@@ -114,12 +124,28 @@ Summary:
 ========================================
 ```
 
-종료 코드: `0` 하나 이상의 클래스 분석 성공, `1` 분석 대상이 없거나 모든 클래스가 실패, `2` 인자 오류(잘못된 `--target` 포함).
-일부 클래스만 실패해도 나머지는 계속 분석하며, 실패 사유는 같은 보고서에 남습니다.
+종료 코드: `class` 모드는 클래스 분석이 하나라도 성공하면 `0`, 대상이 없거나 모두 실패하면 `1`. `plan` 모드는 전체 계획이 완료되면 `0`, 막히거나 실패하면 `1`. 인자 오류(잘못된 `--target` / `--mode` 포함)는 `2`.
+`class` 모드에서 일부 클래스만 실패해도 나머지는 계속 분석하며, 실패 사유는 같은 보고서에 남습니다.
 같은 대상 경로, 같은 `--objective`, 같은 분석 설정으로 다시 실행하면 이미 끝난 클래스는 저장된 보고서를 쓰고, 아직 끝나지 않았거나 일시적으로 실패한 클래스만 이어서 분석합니다. 인증 오류로 작업이 멈춰도 그 전에 성공한 클래스는 남습니다. 완료된 작업을 처음부터 다시 분석하는 옵션은 없습니다.
 분석 결과는 실행 디렉터리의 `data/`에 저장됩니다. 이 디렉터리는 Git에 포함하지 않습니다. 같은 작업의 중복 실행은 `data/locks`의 파일 잠금으로 막습니다.
 `bootRun`은 0이 아닌 종료 코드를 Gradle 빌드 실패로 표시합니다.
 대상 파일 접근 범위는 MCP Server의 workspace 설정으로 제한됩니다.
+
+### 계획 기반 분석 (`--mode=plan`)
+
+목표는 한 번의 LLM 호출로 끝내지 않습니다. Decomposer가 Task로 나누고, 선행 조건이 끝난 Task만 Solver가 처리합니다. Solver는 코드 관계 그래프로 관련 타입을 찾고, MCP로 필요한 원문만 읽습니다. 작업 결과(facts, conclusion, evidence, unresolved questions)는 H2에 저장되며, 필요할 때 Task를 추가하거나 취소할 수 있습니다. 실행할 Task가 없으면 Final Check가 추가 작업 필요 여부를 보고, 더 할 일이 없으면 저장된 결과만 모아 최종 보고서를 만듭니다.
+
+- `--style`은 분해와 판단의 가이드입니다. SOLID/계층 규칙을 if문으로 검사하지 않습니다.
+- 같은 대상, 같은 objective, 같은 style로 다시 실행하면 완료된 계획은 저장된 보고서를 쓰고, 중간에 끊긴 `IN_PROGRESS` Task는 `PENDING`으로 되돌린 뒤 이어서 수행합니다.
+- Graph는 프로젝트 내부 클래스/인터페이스의 `DEPENDS_ON` / `EXTENDS` / `IMPLEMENTS`만 담습니다. 외부 라이브러리 타입은 넣지 않습니다.
+
+```yaml
+agent-harness:
+  problem-solving:
+    max-solver-steps: 8        # 한 Task 안에서 Tool을 쓰는 최대 횟수
+    max-plan-iterations: 20    # 전체 루프에서 Task를 처리하는 최대 횟수
+    max-final-check-rounds: 3  # 추가 작업이 없다고 볼 때까지 Final Check 횟수
+```
 
 ## Filesystem MCP Server
 
@@ -186,8 +212,8 @@ PowerShell에서는 인자를 따옴표로 감싸야 합니다: `.\gradlew.bat t
 
 ## Gemini LLM
 
-CodeQualityAgent는 Agent 역할/규칙, Task, 현재 AgentState, MCP Server에서 발견한 Tool 정의 목록을
-Gemini에 전달하고, Gemini가 구조화된 JSON(USE_TOOL 또는 FINISH)으로 다음 행동을 결정합니다.
+클래스 분석과 계획 기반 Solver 모두 Gemini에 구조화된 JSON 응답을 요청합니다.
+클래스 분석은 파일 하나의 이슈 목록을 받고, 계획 기반 실행은 작업 분해 / Tool 사용 / Task 결과 / 종료 판단 / 최종 종합을 역할별로 요청합니다.
 
 ### API Key
 
