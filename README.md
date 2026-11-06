@@ -30,7 +30,7 @@ Harness는 Agent가 LLM을 호출하고, 필요한 Tool을 사용하며, 그 실
 - Gradle 9 (Gradle Wrapper 포함)
 - JUnit 5
 - Jackson 3 (MCP JSON-RPC, Gemini API, LLM 응답 JSON 처리)
-- Gemini API (JDK HttpClient로 호출)
+- Gemini API 또는 로컬 Ollama (JDK HttpClient로 호출, `llm.provider`로 선택)
 - H2와 Spring Data JPA (클래스 분석 결과와 계획 기반 Task 저장)
 - JavaParser Symbol Solver (프로젝트 내부 타입의 구조적 관계 추출)
 
@@ -45,8 +45,9 @@ com.aicompany.agentharness
 ├── plan     # 계획 기반 문제 분해와 작업 실행
 ├── persistence # H2에 클래스 분석 결과와 계획/Task 결과를 저장
 ├── context  # 분석 작업 단위(Work Unit) 계획 (아직 실행 흐름에 연결되지 않음)
-├── llm      # LLM 연동 추상화
-│   └── gemini  # Gemini 구현체 (GeminiLlm)
+├── llm      # LLM 연동 추상화 (Llm 인터페이스, RetryingLlm)
+│   ├── gemini  # Gemini 구현체 (GeminiLlm)
+│   └── ollama  # Ollama 구현체 (OllamaLlm)
 ├── tool     # Harness Tool 추상화와 ToolRegistry
 ├── mcp      # MCP Client와 MCP Tool Adapter
 ├── cli      # 터미널 실행 진입점 (인자 → 클래스 분석 또는 계획 기반 실행)
@@ -72,7 +73,7 @@ Windows에서는 `./gradlew` 대신 `gradlew.bat`을 사용합니다.
 ## CLI 실행
 
 실행 인자를 Task로 변환해 분석을 돌리고, 최종 결과를 출력합니다.
-Node.js(Filesystem MCP Server)와 `GEMINI_API_KEY`가 필요합니다.
+Node.js(Filesystem MCP Server)가 필요합니다. 기본 Provider는 Gemini이며 `GEMINI_API_KEY`를 씁니다. 로컬 Ollama를 쓰려면 `llm.provider=ollama`로 바꿉니다.
 
 기본 `--mode=class`는 Java 파일을 하나씩 AgentRunner로 분석합니다.
 `--mode=plan`은 목표를 Task로 분해한 뒤, 실행 가능한 작업을 하나씩 처리하고 필요할 때 계획을 고칩니다.
@@ -133,7 +134,7 @@ Summary:
 
 ### 계획 기반 분석 (`--mode=plan`)
 
-목표는 한 번의 LLM 호출로 끝내지 않습니다. Decomposer가 Task로 나누고, 선행 조건이 끝난 Task만 Solver가 처리합니다. Solver는 코드 관계 그래프로 관련 타입을 찾고, MCP로 필요한 원문만 읽습니다. 작업 결과(facts, conclusion, evidence, unresolved questions)는 H2에 저장되며, 필요할 때 Task를 추가하거나 취소할 수 있습니다. 실행할 Task가 없으면 Final Check가 추가 작업 필요 여부를 보고, 더 할 일이 없으면 저장된 결과만 모아 최종 보고서를 만듭니다.
+목표는 한 번의 LLM 호출로 끝내지 않습니다. Decomposer가 Task로 나누고, 선행 조건이 끝난 Task만 Solver가 처리합니다. Solver는 코드 관계 그래프로 관련 타입을 찾고, MCP로 필요한 원문만 읽습니다. Solver 입력에는 target 경로와, target 아래 타입의 그래프 정보(qualifiedName, 파일 경로, Uses/Used by 관계, 최대 30개)가 들어갑니다. 파일 경로를 다시 찾을 필요가 없을 뿐, 어떤 파일을 읽을지는 Solver LLM이 정합니다. 그래프는 target 아래 파일만 노드로 만들고, 타입 resolve에 쓰는 source root는 각 파일의 package 선언으로 계산합니다. 그래서 `main/java` 같은 source root뿐 아니라 그 아래 package 디렉터리를 target으로 줘도 관계가 만들어집니다. 작업 결과(facts, conclusion, evidence, unresolved questions)는 H2에 저장되며, 필요할 때 Task를 추가하거나 취소할 수 있습니다. 실행할 Task가 없으면 Final Check가 추가 작업 필요 여부를 보고, 더 할 일이 없으면 저장된 결과만 모아 최종 보고서를 만듭니다.
 
 - `--style`은 분해와 판단의 가이드입니다. SOLID/계층 규칙을 if문으로 검사하지 않습니다.
 - 같은 대상, 같은 objective, 같은 style로 다시 실행하면 완료된 계획은 저장된 보고서를 쓰고, 중간에 끊긴 `IN_PROGRESS` Task는 `PENDING`으로 되돌린 뒤 이어서 수행합니다.
@@ -172,8 +173,8 @@ agent-harness:
   상대 경로는 애플리케이션 실행 디렉터리 기준입니다.
 - 기본 workspace는 프로젝트의 `src`입니다. `.git`, `build`, `gradle`, `build.gradle`, `.env` 등
   프로젝트 루트의 파일은 Agent가 MCP Tool로 읽을 수 없습니다.
-- API Key 같은 민감한 정보는 파일이 아닌 환경변수(`GEMINI_API_KEY`)로만 주입합니다.
-  workspace(`src`) 안에 비밀 값이 담긴 파일을 두지 마세요.
+- Gemini API Key는 파일이 아닌 환경변수(`GEMINI_API_KEY`)로만 주입합니다.
+  workspace(`src`) 안에 비밀 값이 담긴 파일을 두지 마세요. Ollama는 로컬 실행이 기본이며 API Key를 쓰지 않습니다.
 - Windows에서는 `npx`가 `.cmd` 스크립트이므로 Harness가 `cmd /c`를 앞에 붙여 실행합니다.
 - 다른 디렉터리를 분석하려면 실행 시 workspace를 지정합니다.
 
@@ -210,12 +211,32 @@ agent-harness:
 
 PowerShell에서는 인자를 따옴표로 감싸야 합니다: `.\gradlew.bat test "-Pmcp.integration=true"`
 
-## Gemini LLM
+## LLM Provider
 
-클래스 분석과 계획 기반 Solver 모두 Gemini에 구조화된 JSON 응답을 요청합니다.
+클래스 분석과 계획 기반 Solver는 `Llm` 인터페이스만 사용합니다. Provider는 설정으로 고르며, Agent/Plan 코드는 Gemini, Groq, Ollama를 직접 참조하지 않습니다.
 클래스 분석은 파일 하나의 이슈 목록을 받고, 계획 기반 실행은 작업 분해 / Tool 사용 / Task 결과 / 종료 판단 / 최종 종합을 역할별로 요청합니다.
 
-### API Key
+기본값은 기존과 같은 Gemini입니다.
+
+```yaml
+llm:
+  provider: gemini    # gemini | groq | ollama
+```
+
+실행 시 한 번만 바꿔도 됩니다.
+
+```bash
+# Gemini (기본). GEMINI_API_KEY 필요
+./gradlew bootRun --args="--target=main/java/com/aicompany/agentharness/graph --mode=plan"
+
+# Groq. 설치는 없고 GROQ_API_KEY가 필요하다
+./gradlew bootRun --args="--llm.provider=groq --target=main/java/com/aicompany/agentharness/graph --mode=plan"
+
+# Ollama. 로컬 서버(http://localhost:11434)와 pull한 모델이 필요
+./gradlew bootRun --args="--llm.provider=ollama --target=main/java/com/aicompany/agentharness/graph --mode=plan"
+```
+
+### Gemini
 
 API Key는 **환경변수 `GEMINI_API_KEY`로만** 주입합니다. 코드나 설정 파일에 값을 쓰지 않습니다.
 
@@ -226,16 +247,60 @@ $env:GEMINI_API_KEY = "<your-api-key>"       # PowerShell (현재 세션)
 
 Key가 없어도 애플리케이션은 시작되며, LLM을 처음 호출할 때 명확한 오류로 실패합니다.
 
-### 설정 (`src/main/resources/application.yml`)
-
 ```yaml
 llm:
+  provider: gemini
   gemini:
     api-key: ${GEMINI_API_KEY:}
     model: gemini-3.5-flash
     url: https://generativelanguage.googleapis.com/v1beta
     timeout: 60s
 ```
+
+### Groq
+
+설치는 필요 없습니다. [Groq Console](https://console.groq.com/keys)에서 API Key를 만들어 환경변수 `GROQ_API_KEY`로만 주입합니다.
+
+```bash
+$env:GROQ_API_KEY = "<your-api-key>"       # PowerShell (현재 세션)
+```
+
+```yaml
+llm:
+  provider: groq
+  groq:
+    api-key: ${GROQ_API_KEY:}
+    model: openai/gpt-oss-20b
+    url: https://api.groq.com/openai/v1
+    timeout: 60s
+```
+
+기본 모델은 JSON Schema 응답을 지원하는 `openai/gpt-oss-20b`입니다. 모델은 `--llm.groq.model=<name>`으로 바꿀 수 있습니다.
+
+Tool 호출은 Provider마다 다릅니다. Agent는 Provider API 형식에 의존하지 않고, 실행은 항상 `AgentRunner` → `ToolRegistry` → `ToolPermissionPolicy`를 거칩니다.
+
+- Groq: 요청의 `tools`와 응답의 `tool_calls`로 native tool calling을 사용합니다. 도구를 보낸 요청이 `Failed to parse tool call arguments as JSON`이면 `failed_generation`의 인자를 고쳐 `ToolCall`로 넘기고, 고칠 수 없으면 같은 요청을 한 번 더 보냅니다. 도구를 보내지 않은 요청에서 모델이 native call을 내면, 기존처럼 HTTP 400의 `failed_generation`을 JSON으로 되돌립니다.
+- Gemini: 응답 JSON Schema 안의 `USE_TOOL` 결정을 사용합니다.
+- Ollama: 응답 JSON Schema 안의 `USE_TOOL` 결정을 사용합니다.
+
+### Ollama
+
+로컬 Ollama HTTP API(`/api/chat`)를 사용합니다. API Key는 필요하지 않습니다.
+
+```bash
+ollama pull llama3.2
+```
+
+```yaml
+llm:
+  provider: ollama
+  ollama:
+    base-url: http://localhost:11434
+    model: llama3.2
+    timeout: 120s
+```
+
+모델은 `llm.ollama.model` 또는 `--llm.ollama.model=<name>`으로 바꿉니다. Ollama가 JSON Schema `format`을 지원해야 기존 Agent/Plan parser가 그대로 동작합니다.
 
 ### LLM Retry
 
@@ -249,11 +314,23 @@ llm:
     max-attempts: 3      # 첫 호출 포함 (기본값: 1s, 2s 대기 후 최대 2번 재시도)
     initial-backoff: 1s
     multiplier: 2.0
-    max-backoff: 10s     # Provider가 요청한 대기 시간(Retry-After 등)에도 적용
+    max-backoff: 10s     # exponential backoff 상한
     jitter: 0.1          # ±10%
+    max-retry-after: 60s # Provider가 이보다 긴 대기를 요청하면(예: 하루 한도 소진) 재시도하지 않음
 ```
 
 모든 시도가 실패하면 Agent는 기존처럼 실패로 종료합니다(CLI: `Status: FAILURE`).
+
+### 요청 크기와 Provider Rate Limit
+
+둘은 다른 제한이다.
+
+- **Request Token Budget** (`llm.token-budget.max-request-tokens`, 기본 6000)은 Harness가 한 번의 요청에 허용하는 예상 토큰 수다. 메시지, 계획 맥락, 도구 결과, 응답 스키마를 포함한 요청이 이 값을 넘으면 provider를 호출하지 않는다. 네트워크 오류가 아니므로 HTTP retry 대상이 아니다. 토큰 수는 OpenAI `o200k_base`(jtokkit)로 센다. Groq gpt-oss의 일반 텍스트와 가깝고, Gemini·Ollama tokenizer와는 다를 수 있다. 인코딩에 실패하면 문자 2개당 1토큰으로 되돌린다.
+- **Provider Rate Limit**은 Groq 응답 헤더(`x-ratelimit-limit-tokens`, `x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens`)가 알려준 남은 TPM이다. 애플리케이션 설정에 TPM 숫자를 따로 두지 않고, 헤더를 기준으로 삼는다. 남은 토큰이 이번 요청보다 적으면 헤더의 reset까지 기다린 뒤 다시 확인한다. TPD 헤더가 없으면 하루 한도를 임의로 계산하지 않는다.
+
+429 응답에 `Retry-After`가 있으면 기존 `RetryingLlm`이 그 시간만큼 기다린 뒤 재시도한다. 헤더가 없으면 기존 backoff를 쓴다. `Retry-After`가 `llm.retry.max-retry-after`보다 길면 재시도하지 않고 바로 실패한다. reset까지 기다리는 사전 대기는 이 상한과 별도이다.
+
+Rate-limit 스냅샷은 프로세스 메모리에만 있다. 분석 결과로 H2에 저장하지 않는다. 같은 API Key를 여러 프로세스가 쓰면 이 상태는 서로 보이지 않으므로, 그 경우에는 별도 distributed rate limiter가 필요하다.
 
 ### 실제 Gemini API 통합 테스트
 
@@ -265,3 +342,11 @@ llm:
 ```
 
 PowerShell: `.\gradlew.bat test "-Pllm.integration=true"`
+
+로컬 Ollama 연동 테스트는 기본 빌드에서 건너뜁니다.
+
+```bash
+./gradlew test -Pollama.integration=true
+```
+
+PowerShell: `.\gradlew.bat test "-Pollama.integration=true"`

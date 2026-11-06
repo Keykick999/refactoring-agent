@@ -18,10 +18,11 @@ public record LlmRetryProperties(
 		@DefaultValue("1s") Duration initialBackoff,
 		@DefaultValue("2.0") double multiplier,
 		@DefaultValue("10s") Duration maxBackoff,
-		@DefaultValue("0.1") double jitter) {
+		@DefaultValue("0.1") double jitter,
+		@DefaultValue("60s") Duration maxRetryAfter) {
 
 	public LlmRetryPolicy toPolicy() {
-		return new LlmRetryPolicy(maxAttempts, initialBackoff, multiplier, maxBackoff, jitter);
+		return new LlmRetryPolicy(maxAttempts, initialBackoff, multiplier, maxBackoff, jitter, maxRetryAfter);
 	}
 
 }

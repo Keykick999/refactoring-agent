@@ -281,7 +281,10 @@ AgentRunner → CodeQualityAgent → Llm(RetryingLlm) → GeminiLlm → Gemini A
 
 ### Retry-After 처리
 
-- Provider가 대기 시간을 주면 exponential backoff 대신 그 값을 사용하되 `max-backoff`를 넘지 않는다.
+- Provider가 대기 시간을 주면 exponential backoff 대신 그 값을 그대로 사용한다. `max-backoff`는 exponential backoff에만 적용한다.
+  잘라서 일찍 재시도하면 같은 429를 한 번 더 받을 뿐이기 때문이다.
+- 그 대기 시간이 `max-retry-after`(기본 60s)보다 길면 재시도하지 않고 바로 실패한다(카테고리는 그대로 `RATE_LIMIT`).
+  하루 한도 소진처럼 몇 시간 뒤에 풀리는 제한은 재시도해도 성공할 수 없다. 분 단위 한도는 대개 60s 안에 풀린다.
 - `Retry-After` 헤더(초 단위)를 우선하고, 없으면 Gemini 오류 본문의 `RetryInfo.retryDelay`(예: `"37s"`)를 사용한다.
   Gemini는 quota 초과 시 주로 본문으로 대기 시간을 알려준다.
 - HTTP-date 형식의 Retry-After는 지원하지 않는다(Clock 의존 추가 대비 이득이 작음). 이 경우 exponential backoff를 쓴다.

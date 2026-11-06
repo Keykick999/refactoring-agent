@@ -71,6 +71,39 @@ class RetryingLlmTest {
 	}
 
 	@Test
+	void failsWithoutRetryingWhenProviderAsksToWaitLongerThanMaxRetryAfter() {
+		LlmRetryPolicy policy = new LlmRetryPolicy(3, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 0, Duration.ofSeconds(60));
+
+		assertThatThrownBy(() -> new RetryingLlm(failingWith(Duration.ofHours(5)), policy, sleeps::add).generate(REQUEST))
+				.isInstanceOf(LlmException.class)
+				.isNotInstanceOf(RetryableLlmException.class)
+				.hasMessageContaining("PT5H")
+				.hasMessageContaining("HTTP 429")
+				.hasCauseInstanceOf(RetryableLlmException.class)
+				.extracting(thrown -> ((LlmException) thrown).category())
+				.isEqualTo(LlmErrorCategory.RATE_LIMIT);
+		assertThat(callCount).hasValue(1);
+		assertThat(sleeps).isEmpty();
+	}
+
+	@Test
+	void retriesWhenProviderAsksToWaitExactlyMaxRetryAfter() {
+		LlmRetryPolicy policy = new LlmRetryPolicy(2, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 0, Duration.ofSeconds(60));
+
+		assertThatThrownBy(() -> new RetryingLlm(failingWith(Duration.ofSeconds(60)), policy, sleeps::add).generate(REQUEST))
+				.isInstanceOf(LlmException.class)
+				.hasMessageContaining("after 2 attempts");
+		assertThat(callCount).hasValue(2);
+		assertThat(sleeps).containsExactly(Duration.ofSeconds(60));
+	}
+
+	@Test
+	void usesSixtySecondsAsDefaultMaxRetryAfter() {
+		assertThat(new LlmRetryPolicy(3, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 0).maxRetryAfter())
+				.isEqualTo(Duration.ofSeconds(60));
+	}
+
+	@Test
 	void rejectsInvalidPolicy() {
 		assertThatThrownBy(() -> new LlmRetryPolicy(0, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 0))
 				.isInstanceOf(IllegalArgumentException.class);
@@ -78,6 +111,13 @@ class RetryingLlmTest {
 				.isInstanceOf(IllegalArgumentException.class);
 		assertThatThrownBy(() -> new LlmRetryPolicy(3, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 1.0))
 				.isInstanceOf(IllegalArgumentException.class);
+	}
+
+	private Llm failingWith(Duration retryAfter) {
+		return request -> {
+			callCount.incrementAndGet();
+			throw new RetryableLlmException("HTTP 429", retryAfter);
+		};
 	}
 
 	private Llm alwaysFailing() {

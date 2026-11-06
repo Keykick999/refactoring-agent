@@ -26,6 +26,9 @@ import com.aicompany.agentharness.tool.ToolPermissionPolicy;
 import com.aicompany.agentharness.tool.ToolRegistry;
 import com.aicompany.agentharness.tool.ToolResult;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -37,6 +40,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,6 +68,19 @@ class CodeQualityAgentTest {
 			{"type": "FINISH", "result": {"success": true, "summary": "Rename variable 'x' to describe its role."}}
 			""";
 
+	private static final String USE_CONTAINER_EXEC = """
+			{
+			  "type": "USE_TOOL",
+			  "toolCall": {
+			    "toolName": "container.exec",
+			    "arguments": {
+			      "command": "SECRET_ARGUMENT_PAYLOAD"
+			    }
+			  }
+			}
+			""";
+
+	private final JsonMapper jsonMapper = new JsonMapper();
 	private final Task task = new Task("Analyze code quality", new Target(Path.of("test.java")));
 
 	@Test
@@ -86,7 +103,9 @@ class CodeQualityAgentTest {
 		new CodeQualityAgent(llm, AVAILABLE_TOOLS).decide(new AgentState(task));
 
 		LlmRequest request = llm.receivedRequests.get(0);
-		assertThat(request.responseJsonSchema()).isEqualTo(AgentDecisionParser.RESPONSE_JSON_SCHEMA);
+		assertThat(toolNameEnum(request.responseJsonSchema())).containsExactly("read_text_file", "list_directory");
+		assertThat(schemaWithoutToolNameEnum(request.responseJsonSchema()))
+				.isEqualTo(jsonMapper.readTree(AgentDecisionParser.RESPONSE_JSON_SCHEMA));
 		assertThat(request.messages()).extracting(Message::role).containsExactly(MessageRole.SYSTEM, MessageRole.USER);
 		assertThat(request.messages().get(0).content()).contains("You are a Code Quality Agent");
 		assertThat(request.messages().get(1).content())
@@ -205,19 +224,88 @@ class CodeQualityAgentTest {
 		ToolPermissionPolicy permissionPolicy =
 				new ToolPermissionPolicy(List.of("read_text_file", "write_file"), List.of("write_file"));
 		ScriptedLlm llm = new ScriptedLlm("""
-				{"type": "USE_TOOL", "toolCall": {"toolName": "write_file", "arguments": {"path": "test.java", "content": ""}}}
+				{"type": "USE_TOOL", "toolCall": {"toolName": "write_file", "arguments": {"path": "test.java", "content": "DO_NOT_PERSIST"}}}
 				""", FINISH_WITH_SUCCESS);
 
-		new AgentRunner(toolRegistry, permissionPolicy, 5)
+		AgentResult agentResult = new AgentRunner(toolRegistry, permissionPolicy, 5)
 				.run(new CodeQualityAgent(llm, permissionPolicy.allowedToolDefinitions(toolRegistry.toolDefinitions())), task);
 
 		assertThat(writeTool.executionCount).isZero();
+		assertThat(llm.receivedRequests).hasSize(2);
 		assertThat(llm.receivedRequests.get(0).messages().get(1).content())
 				.contains("- name: read_text_file")
 				.doesNotContain("write_file");
-		assertThat(llm.receivedRequests.get(1).messages().get(3).content())
-				.contains("write_file (failure)")
-				.contains("Tool execution denied: write_file");
+		assertThat(llm.receivedRequests.get(1).messages()).extracting(Message::content)
+				.anySatisfy(content -> assertThat(content)
+						.contains("Unavailable tool 'write_file'")
+						.contains("Choose one of: read_text_file")
+						.doesNotContain("DO_NOT_PERSIST"));
+		assertThat(agentResult).isEqualTo(AgentResult.success("Rename variable 'x' to describe its role."));
+	}
+
+	@Test
+	void doesNotExecuteToolMissingFromAvailableDefinitions() {
+		RecordingTool readTool = new RecordingTool("read_text_file");
+		RecordingTool containerExec = new RecordingTool("container.exec");
+		ToolRegistry toolRegistry = new ToolRegistry();
+		toolRegistry.register(readTool);
+		toolRegistry.register(containerExec);
+		ToolPermissionPolicy permissionPolicy = new ToolPermissionPolicy(List.of("read_text_file", "container.exec"), List.of());
+		ScriptedLlm llm = new ScriptedLlm(USE_CONTAINER_EXEC, USE_CONTAINER_EXEC);
+		AtomicReference<AgentState> capturedState = new AtomicReference<>();
+		CodeQualityAgent agent = new CodeQualityAgent(llm, List.of(AVAILABLE_TOOLS.get(0)));
+
+		AgentResult agentResult = new AgentRunner(toolRegistry, permissionPolicy, 5).run(agentState -> {
+			capturedState.set(agentState);
+			return agent.decide(agentState);
+		}, task);
+
+		assertThat(agentResult.success()).isFalse();
+		assertThat(agentResult.summary()).isEqualTo("Unavailable tool 'container.exec'");
+		assertThat(readTool.executionCount).isZero();
+		assertThat(containerExec.executionCount).isZero();
+		assertThat(llm.receivedRequests).hasSize(2);
+		assertThat(llm.receivedRequests.get(1).messages()).extracting(Message::content)
+				.anySatisfy(content -> assertThat(content)
+						.isEqualTo("Unavailable tool 'container.exec'. Choose one of: read_text_file.")
+						.doesNotContain("SECRET_ARGUMENT_PAYLOAD")
+						.doesNotContain("inputSchema"));
+		assertThat(capturedState.get().toolResults()).isEmpty();
+		assertThat(capturedState.get().messages()).extracting(Message::content)
+				.noneMatch(content -> content.contains("container.exec") || content.contains("SECRET_ARGUMENT_PAYLOAD"));
+	}
+
+	@Test
+	void doesNotExecuteNativeToolDeniedByPolicy() {
+		RecordingTool writeTool = new RecordingTool("write_file");
+		ToolRegistry toolRegistry = new ToolRegistry();
+		toolRegistry.register(writeTool);
+		ToolPermissionPolicy permissionPolicy = new ToolPermissionPolicy(List.of("write_file"), List.of("write_file"));
+		NativeLlm llm = new NativeLlm(
+				new LlmResponse("", List.of(new ToolCall("call_write", "write_file", Map.of("path", "test.java", "content", "DO_NOT_PERSIST")))),
+				new LlmResponse(FINISH_WITH_SUCCESS));
+
+		AgentResult agentResult = new AgentRunner(toolRegistry, permissionPolicy, 5)
+				.run(new CodeQualityAgent(llm, List.of(new ToolDefinition("write_file", "Write a file", "{\"type\":\"object\"}"))), task);
+
+		assertThat(writeTool.executionCount).isZero();
+		assertThat(agentResult).isEqualTo(AgentResult.success("Rename variable 'x' to describe its role."));
+		assertThat(llm.receivedRequests.get(1).messages()).extracting(Message::content)
+				.anySatisfy(content -> assertThat(content).contains("Tool execution denied: write_file"));
+	}
+
+	@Test
+	void usesToolChosenByTheSingleRetry() {
+		ScriptedLlm llm = new ScriptedLlm(USE_CONTAINER_EXEC, USE_READ_TEXT_FILE);
+		AgentState agentState = new AgentState(task);
+
+		AgentDecision decision = new CodeQualityAgent(llm, AVAILABLE_TOOLS).decide(agentState);
+
+		assertThat(decision.type()).isEqualTo(AgentDecision.Type.USE_TOOL);
+		assertThat(decision.toolCall().toolName()).isEqualTo("read_text_file");
+		assertThat(llm.receivedRequests).hasSize(2);
+		assertThat(agentState.messages()).containsExactly(Message.assistant(USE_READ_TEXT_FILE));
+		assertThat(agentState.messages()).extracting(Message::content).noneMatch(content -> content.contains("SECRET_ARGUMENT_PAYLOAD"));
 	}
 
 	@Test
@@ -263,6 +351,18 @@ class CodeQualityAgentTest {
 		assertThat(agentResult.summary()).contains("LLM call failed", "after 3 attempts", "HTTP 429");
 	}
 
+	private List<String> toolNameEnum(String schema) {
+		List<String> names = new ArrayList<>();
+		jsonMapper.readTree(schema).at("/properties/toolCall/properties/toolName/enum").forEach(name -> names.add(name.asString()));
+		return names;
+	}
+
+	private JsonNode schemaWithoutToolNameEnum(String schema) {
+		ObjectNode root = (ObjectNode) jsonMapper.readTree(schema);
+		((ObjectNode) root.at("/properties/toolCall/properties/toolName")).remove("enum");
+		return root;
+	}
+
 	private static class RecordingTool implements Tool {
 
 		private final String name;
@@ -291,6 +391,28 @@ class CodeQualityAgentTest {
 		public ToolResult execute(Map<String, Object> arguments) {
 			executionCount++;
 			return ToolResult.success(name, "executed");
+		}
+
+	}
+
+	private static class NativeLlm implements Llm {
+
+		private final Deque<LlmResponse> scriptedResponses;
+		private final List<LlmRequest> receivedRequests = new ArrayList<>();
+
+		NativeLlm(LlmResponse... scriptedResponses) {
+			this.scriptedResponses = new ArrayDeque<>(List.of(scriptedResponses));
+		}
+
+		@Override
+		public boolean nativeToolCalls() {
+			return true;
+		}
+
+		@Override
+		public LlmResponse generate(LlmRequest request) {
+			receivedRequests.add(request);
+			return scriptedResponses.removeFirst();
 		}
 
 	}

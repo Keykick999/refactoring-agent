@@ -9,6 +9,7 @@ public enum LlmErrorCategory {
 	SERVER,
 	NETWORK,
 	TOKEN_LIMIT,
+	REQUEST_BUDGET,
 	AUTHENTICATION,
 	INVALID_RESPONSE,
 	SOURCE_UNREADABLE,
@@ -27,8 +28,9 @@ public enum LlmErrorCategory {
 	public String userAction() {
 		return switch (this) {
 			case RATE_LIMIT, SERVER, NETWORK -> "The failure looks temporary. Run the same target again to resume this class.";
-			case AUTHENTICATION -> "Set GEMINI_API_KEY and run the same target again. Completed classes are kept.";
+			case AUTHENTICATION -> "Set the API key for the selected provider and run the same target again. Completed classes are kept.";
 			case TOKEN_LIMIT, SOURCE_TOO_LARGE -> "The source was not truncated. Split the file or raise the source size limit.";
+			case REQUEST_BUDGET -> "The request is larger than llm.token-budget.max-request-tokens and was not sent. Shrink the prompt or raise the budget.";
 			case PERSISTENCE -> "The analysis result was not saved. Run the same target again.";
 			case SOURCE_UNREADABLE -> "The source file could not be read. This class will not be retried automatically.";
 			case INVALID_RESPONSE, UNEXPECTED -> "This class will not be retried automatically.";

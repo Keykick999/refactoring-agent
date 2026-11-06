@@ -10,9 +10,6 @@ import com.aicompany.agentharness.harness.AgentRunner;
 import com.aicompany.agentharness.plan.PlanStore;
 import com.aicompany.agentharness.plan.ProblemSolvingCoordinator;
 import com.aicompany.agentharness.llm.Llm;
-import com.aicompany.agentharness.llm.RetrySleeper;
-import com.aicompany.agentharness.llm.RetryingLlm;
-import com.aicompany.agentharness.llm.gemini.GeminiLlm;
 import com.aicompany.agentharness.mcp.McpClient;
 import com.aicompany.agentharness.mcp.McpTool;
 import com.aicompany.agentharness.mcp.StdioMcpTransport;
@@ -21,6 +18,7 @@ import com.aicompany.agentharness.tool.ToolPermissionPolicy;
 import com.aicompany.agentharness.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -32,8 +30,7 @@ import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnBooleanProperty("agent-harness.filesystem-mcp-server.enabled")
-@EnableConfigurationProperties({AgentHarnessProperties.class, GeminiProperties.class, LlmRetryProperties.class,
-		ProblemSolvingProperties.class})
+@EnableConfigurationProperties({AgentHarnessProperties.class, ProblemSolvingProperties.class})
 public class AgentHarnessConfiguration {
 
 	private static final Logger log = LoggerFactory.getLogger(AgentHarnessConfiguration.class);
@@ -93,22 +90,6 @@ public class AgentHarnessConfiguration {
 		return new AgentRunner(toolRegistry, toolPermissionPolicy, properties.maxSteps());
 	}
 
-	/**
-	 * API Key가 없어도 애플리케이션은 시작되도록 하고, 실제 호출 시점에 명확한 오류를 낸다.
-	 * MCP 연결만 검증하는 환경에서 Gemini Key를 요구하지 않기 위해서다.
-	 */
-	@Bean
-	public Llm llm(GeminiProperties geminiProperties, LlmRetryProperties retryProperties) {
-		log.info("Using Gemini LLM: {}", geminiProperties);
-		Llm geminiLlm = new GeminiLlm(geminiProperties.url(), geminiProperties.model(), geminiProperties.apiKey(), geminiProperties.timeout());
-		if (!retryProperties.enabled()) {
-			log.info("LLM retry is disabled");
-			return geminiLlm;
-		}
-		log.info("LLM retry is enabled: {}", retryProperties);
-		return new RetryingLlm(geminiLlm, retryProperties.toPolicy(), RetrySleeper.THREAD_SLEEP);
-	}
-
 	@Bean
 	public JavaSourceExplorer javaSourceExplorer(ToolRegistry toolRegistry, ToolPermissionPolicy toolPermissionPolicy,
 			AgentHarnessProperties properties) {
@@ -117,10 +98,10 @@ public class AgentHarnessConfiguration {
 
 	@Bean
 	public ClassAnalysisCoordinator classAnalysisCoordinator(JavaSourceExplorer javaSourceExplorer, Llm llm,
-			AgentRunner agentRunner, AgentHarnessProperties properties, GeminiProperties geminiProperties,
-			AnalysisJobStore analysisJobStore) {
+			AgentRunner agentRunner, AgentHarnessProperties properties,
+			@Qualifier("configuredLlmModel") String configuredLlmModel, AnalysisJobStore analysisJobStore) {
 		AgentHarnessProperties.ClassAnalysis classAnalysis = properties.classAnalysis();
-		AnalysisSettings settings = new AnalysisSettings(classAnalysis.maxSourceCharacters(), geminiProperties.model(),
+		AnalysisSettings settings = new AnalysisSettings(classAnalysis.maxSourceCharacters(), configuredLlmModel,
 				classAnalysis.searchTool(), classAnalysis.readTool());
 		return new ClassAnalysisCoordinator(javaSourceExplorer, llm, agentRunner, settings, analysisJobStore, Path.of("data", "locks"));
 	}

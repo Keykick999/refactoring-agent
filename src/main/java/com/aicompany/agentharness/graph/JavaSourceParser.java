@@ -19,46 +19,47 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * Java 소스를 AST로 읽는다. 파서는 JavaParser를 쓰고, 타입 이름은 소스 루트와 JDK만으로 resolve한다.
+ * target 아래 Java 소스만 AST로 읽는다. 타입 이름은 package 선언으로 계산한 source root와 JDK로 resolve한다.
  */
 final class JavaSourceParser {
 
-	List<ParsedJavaSource> parse(Path sourceRoot) {
-		if (sourceRoot == null) {
-			throw new IllegalArgumentException("sourceRoot must not be null");
+	List<ParsedJavaSource> parse(Path target) {
+		if (target == null) {
+			throw new IllegalArgumentException("target must not be null");
 		}
-		if (!Files.isDirectory(sourceRoot)) {
-			throw new IllegalArgumentException("sourceRoot must be a directory: " + sourceRoot);
+		if (!Files.isDirectory(target)) {
+			throw new IllegalArgumentException("target must be a directory: " + target);
 		}
-		ParserConfiguration configuration = new ParserConfiguration()
+		Path normalizedTarget = target.toAbsolutePath().normalize();
+		JavaParser parser = new JavaParser(new ParserConfiguration()
 				.setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17)
-				.setCharacterEncoding(StandardCharsets.UTF_8)
-				.setSymbolResolver(new JavaSymbolSolver(typeSolver(sourceRoot)));
-		JavaParser parser = new JavaParser(configuration);
+				.setCharacterEncoding(StandardCharsets.UTF_8));
 
 		List<ParsedJavaSource> sources = new ArrayList<>();
-		for (Path file : javaFiles(sourceRoot)) {
+		for (Path file : javaFiles(normalizedTarget)) {
 			sources.add(new ParsedJavaSource(file.toAbsolutePath().normalize(), parseFile(parser, file)));
 		}
+		JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver(JavaSourceRoots.resolve(normalizedTarget, sources)));
+		sources.forEach(source -> symbolSolver.inject(source.compilationUnit()));
 		return List.copyOf(sources);
 	}
 
-	private static CombinedTypeSolver typeSolver(Path sourceRoot) {
+	private static CombinedTypeSolver typeSolver(List<Path> sourceRoots) {
 		CombinedTypeSolver solver = new CombinedTypeSolver();
-		solver.add(new JavaParserTypeSolver(sourceRoot));
+		sourceRoots.forEach(sourceRoot -> solver.add(new JavaParserTypeSolver(sourceRoot)));
 		solver.add(new ReflectionTypeSolver(true));
 		return solver;
 	}
 
-	private static List<Path> javaFiles(Path sourceRoot) {
-		try (Stream<Path> paths = Files.walk(sourceRoot)) {
+	private static List<Path> javaFiles(Path target) {
+		try (Stream<Path> paths = Files.walk(target)) {
 			return paths.filter(Files::isRegularFile)
 					.filter(path -> path.getFileName().toString().endsWith(".java"))
 					.sorted(Comparator.comparing(path -> path.toAbsolutePath().normalize().toString()))
 					.toList();
 		}
 		catch (IOException exception) {
-			throw new IllegalStateException("Could not list Java sources in " + sourceRoot, exception);
+			throw new IllegalStateException("Could not list Java sources in " + target, exception);
 		}
 	}
 

@@ -58,15 +58,36 @@ logging:
     com.aicompany.agentharness: DEBUG
 
 llm:
+  # gemini(기본), groq, ollama. Agent/Plan 코드는 이 값으로 고른 Llm만 사용한다.
+  provider: gemini
   gemini:
     # 환경변수로만 주입한다. 미설정 시 빈 값이 되어 첫 LLM 호출에서 명확한 오류를 낸다.
     api-key: ${GEMINI_API_KEY:}
     model: gemini-3.5-flash
     url: https://generativelanguage.googleapis.com/v1beta
     timeout: 60s
+    # Free Tier RPM. 최근 window 안에 보낸 요청이 max-requests개면 가장 오래된 요청이 window를 벗어날 때까지 기다린다.
+    # Retry 시도도 한 번의 요청으로 센다. JVM 메모리에만 두므로 여러 프로세스가 같은 키를 쓰면 공유되지 않는다.
+    rate-limit:
+      max-requests: 5
+      window: 60s
+  groq:
+    # 환경변수로만 주입한다. 미설정 시 빈 값이 되어 첫 LLM 호출에서 명확한 오류를 낸다.
+    api-key: ${GROQ_API_KEY:}
+    model: openai/gpt-oss-20b
+    url: https://api.groq.com/openai/v1
+    timeout: 60s
+  ollama:
+    base-url: http://localhost:11434
+    model: llama3.2
+    timeout: 120s
+  # 한 번의 LLM 요청에 허용하는 예상 토큰 수. Provider의 TPM/TPD가 아니다.
+  token-budget:
+    max-request-tokens: 6000
   # 일시적인 실패(429, 500/502/503/504, 네트워크 오류)만 재시도한다. 다른 4xx는 즉시 실패한다.
   # max-attempts는 첫 호출을 포함한 횟수다(3이면 1s, 2s 대기 후 최대 2번 재시도).
-  # Provider가 대기 시간(Retry-After)을 주면 그 값을 우선하되 max-backoff를 넘지 않는다.
+  # Provider가 대기 시간(Retry-After, Gemini RetryInfo)을 주면 그 값만큼 기다린다.
+  # 그 시간이 max-retry-after보다 길면(예: 하루 한도 소진) 재시도하지 않고 바로 실패한다.
   retry:
     enabled: true
     max-attempts: 3
@@ -74,3 +95,4 @@ llm:
     multiplier: 2.0
     max-backoff: 10s
     jitter: 0.1
+    max-retry-after: 60s

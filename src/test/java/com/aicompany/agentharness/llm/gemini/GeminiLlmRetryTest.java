@@ -1,5 +1,6 @@
 package com.aicompany.agentharness.llm.gemini;
 
+import com.aicompany.agentharness.llm.InMemoryLlmRateLimiter;
 import com.aicompany.agentharness.llm.LlmErrorCategory;
 import com.aicompany.agentharness.llm.LlmException;
 import com.aicompany.agentharness.llm.LlmRequest;
@@ -14,9 +15,13 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.aicompany.agentharness.llm.gemini.FakeGeminiServer.error;
 import static com.aicompany.agentharness.llm.gemini.FakeGeminiServer.rawError;
@@ -112,12 +117,36 @@ class GeminiLlmRetryTest {
 	}
 
 	@Test
-	void capsRetryAfterAtMaxBackoff() {
+	void waitsTheFullRetryAfterEvenWhenItExceedsMaxBackoff() {
 		server = FakeGeminiServer.start(error(429, "slow down").withHeader("Retry-After", "60"), text("ok"));
 
 		retryingLlm().generate(REQUEST);
 
-		assertThat(sleeps).containsExactly(Duration.ofSeconds(10));
+		assertThat(sleeps).containsExactly(Duration.ofSeconds(60));
+		assertThat(server.requestCount()).isEqualTo(2);
+	}
+
+	@Test
+	void doesNotRetryWhenGeminiAsksToWaitLongerThanMaxRetryAfter() {
+		server = FakeGeminiServer.start(rawError(429, """
+				{"error": {"code": 429, "message": "Generate content requests per day limit exceeded on Free Tier.",
+				  "status": "RESOURCE_EXHAUSTED",
+				  "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "19209s"}]}}
+				"""), text("ok"));
+		AtomicInteger acquires = new AtomicInteger();
+		GeminiLlm gemini = new GeminiLlm(server.baseUrl(), "test-model", "test-api-key", Duration.ofSeconds(5),
+				acquires::incrementAndGet);
+
+		assertThatThrownBy(() -> new RetryingLlm(gemini, RETRY_POLICY, sleeps::add).generate(REQUEST))
+				.isInstanceOf(LlmException.class)
+				.isNotInstanceOf(RetryableLlmException.class)
+				.hasMessageContaining("longer than max-retry-after")
+				.hasMessageContaining("per day limit")
+				.extracting(thrown -> ((LlmException) thrown).category())
+				.isEqualTo(LlmErrorCategory.RATE_LIMIT);
+		assertThat(server.requestCount()).isEqualTo(1);
+		assertThat(acquires.get()).isEqualTo(1);
+		assertThat(sleeps).isEmpty();
 	}
 
 	@Test
@@ -170,6 +199,47 @@ class GeminiLlmRetryTest {
 				.extracting(thrown -> ((LlmException) thrown).category())
 				.isEqualTo(LlmErrorCategory.TOKEN_LIMIT);
 		assertThat(server.requestCount()).isEqualTo(1);
+	}
+
+	@Test
+	void everyRetryAttemptPassesTheRateLimiterAgain() {
+		server = FakeGeminiServer.start(error(429, "Resource has been exhausted"), error(503, "overloaded"), text("ok"));
+		AtomicInteger acquires = new AtomicInteger();
+		GeminiLlm gemini = new GeminiLlm(server.baseUrl(), "test-model", "test-api-key", Duration.ofSeconds(5),
+				acquires::incrementAndGet);
+
+		LlmResponse response = new RetryingLlm(gemini, RETRY_POLICY, sleeps::add).generate(REQUEST);
+
+		assertThat(response.content()).isEqualTo("ok");
+		assertThat(acquires.get()).isEqualTo(3);
+		assertThat(server.requestCount()).isEqualTo(3);
+	}
+
+	@Test
+	void retryWaitsForTheRateLimitWhenTheFirstAttemptUsedTheLastSlot() {
+		server = FakeGeminiServer.start(error(429, "Resource has been exhausted"), text("ok"));
+		Clock clock = Clock.fixed(Instant.parse("2026-11-06T00:00:00Z"), ZoneOffset.UTC);
+		List<Duration> limiterWaits = new ArrayList<>();
+		InMemoryLlmRateLimiter limiter = new InMemoryLlmRateLimiter("Gemini", 1, Duration.ofSeconds(60), clock, duration -> {
+			limiterWaits.add(duration);
+			if (limiterWaits.size() == 1) {
+				return;
+			}
+			throw new InterruptedException();
+		});
+		GeminiLlm gemini = new GeminiLlm(server.baseUrl(), "test-model", "test-api-key", Duration.ofSeconds(5), limiter);
+
+		try {
+			assertThatThrownBy(() -> new RetryingLlm(gemini, RETRY_POLICY, sleeps::add).generate(REQUEST))
+					.isInstanceOf(LlmException.class)
+					.hasMessageContaining("rate limit");
+		}
+		finally {
+			Thread.interrupted();
+		}
+		assertThat(server.requestCount()).isEqualTo(1);
+		assertThat(sleeps).containsExactly(Duration.ofSeconds(1));
+		assertThat(limiterWaits).containsExactly(Duration.ofSeconds(60), Duration.ofSeconds(60));
 	}
 
 	private RetryingLlm retryingLlm() {

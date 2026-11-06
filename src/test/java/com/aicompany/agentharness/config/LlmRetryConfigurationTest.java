@@ -36,6 +36,8 @@ class LlmRetryConfigurationTest {
 			assertThat(retry.initialBackoff()).isEqualTo(Duration.ofSeconds(1));
 			assertThat(retry.multiplier()).isEqualTo(2.0);
 			assertThat(retry.maxBackoff()).isEqualTo(Duration.ofSeconds(10));
+			assertThat(retry.maxRetryAfter()).isEqualTo(Duration.ofSeconds(60));
+			assertThat(retry.toPolicy().maxRetryAfter()).isEqualTo(Duration.ofSeconds(60));
 		});
 	}
 
@@ -47,25 +49,30 @@ class LlmRetryConfigurationTest {
 				"llm.retry.initial-backoff=500ms",
 				"llm.retry.multiplier=3.0",
 				"llm.retry.max-backoff=30s",
-				"llm.retry.jitter=0").run(context -> {
+				"llm.retry.jitter=0",
+				"llm.retry.max-retry-after=2m").run(context -> {
 			LlmRetryProperties retry = context.getBean(LlmRetryProperties.class);
 
-			assertThat(retry).isEqualTo(new LlmRetryProperties(false, 5, Duration.ofMillis(500), 3.0, Duration.ofSeconds(30), 0));
+			assertThat(retry).isEqualTo(new LlmRetryProperties(false, 5, Duration.ofMillis(500), 3.0, Duration.ofSeconds(30), 0,
+					Duration.ofMinutes(2)));
 		});
 	}
 
 	@Test
 	void usesDefaultRetrySettingsWhenNotConfigured() {
 		contextRunner.run(context -> assertThat(context.getBean(LlmRetryProperties.class))
-				.isEqualTo(new LlmRetryProperties(true, 3, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 0.1)));
+				.isEqualTo(new LlmRetryProperties(true, 3, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(10), 0.1,
+						Duration.ofSeconds(60))));
 	}
 
 	@Test
 	void failsImmediatelyOnRateLimitWhenRetryIsDisabled() {
 		try (FakeGeminiServer server = FakeGeminiServer.start(error(429, "quota exceeded"), text("ok"))) {
-			LlmRetryProperties disabled = new LlmRetryProperties(false, 3, Duration.ofMillis(1), 2.0, Duration.ofMillis(1), 0);
+			LlmRetryProperties disabled = new LlmRetryProperties(false, 3, Duration.ofMillis(1), 2.0, Duration.ofMillis(1), 0,
+					Duration.ofSeconds(60));
 
-			Llm llm = new AgentHarnessConfiguration().llm(geminiProperties(server), disabled);
+			Llm llm = LlmConfiguration.withRetry(new GeminiLlm(server.baseUrl(), "test-model", "test-api-key", Duration.ofSeconds(5)),
+					disabled);
 
 			assertThat(llm).isInstanceOf(GeminiLlm.class);
 			assertThatThrownBy(() -> llm.generate(new LlmRequest(List.of(Message.user("Hi")))))
@@ -78,18 +85,16 @@ class LlmRetryConfigurationTest {
 	@Test
 	void retriesThroughConfiguredLlmWhenRetryIsEnabled() {
 		try (FakeGeminiServer server = FakeGeminiServer.start(error(429, "quota exceeded"), text("ok"))) {
-			LlmRetryProperties enabled = new LlmRetryProperties(true, 3, Duration.ofMillis(1), 2.0, Duration.ofMillis(5), 0);
+			LlmRetryProperties enabled = new LlmRetryProperties(true, 3, Duration.ofMillis(1), 2.0, Duration.ofMillis(5), 0,
+					Duration.ofSeconds(60));
 
-			Llm llm = new AgentHarnessConfiguration().llm(geminiProperties(server), enabled);
+			Llm llm = LlmConfiguration.withRetry(new GeminiLlm(server.baseUrl(), "test-model", "test-api-key", Duration.ofSeconds(5)),
+					enabled);
 
 			assertThat(llm).isInstanceOf(RetryingLlm.class);
 			assertThat(llm.generate(new LlmRequest(List.of(Message.user("Hi")))).content()).isEqualTo("ok");
 			assertThat(server.requestCount()).isEqualTo(2);
 		}
-	}
-
-	private static GeminiProperties geminiProperties(FakeGeminiServer server) {
-		return new GeminiProperties("test-api-key", "test-model", server.baseUrl(), Duration.ofSeconds(5));
 	}
 
 	@Configuration(proxyBeanMethods = false)

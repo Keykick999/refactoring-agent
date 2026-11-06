@@ -290,6 +290,126 @@ class CodeRelationshipGraphTest {
 		assertThat(graph.findRelatedNodes("com.example.order.OrderService")).isEmpty();
 	}
 
+	@Test
+	void buildsRelationshipsWhenTargetIsTheSourceRoot() throws IOException {
+		writeShopSample();
+
+		CodeRelationshipGraph graph = builder.build(sourceRoot.resolve("sample/java"));
+
+		assertThat(graph.getNodes()).extracting(CodeNode::qualifiedName).containsExactly(
+				"com.example.other.Customer", "com.example.shop.DiscountCalculator", "com.example.shop.Order",
+				"com.example.shop.OrderRepository", "com.example.shop.OrderService");
+		assertThat(relationshipLines(graph)).contains(SHOP_RELATIONSHIPS).contains("OrderService -> Customer");
+	}
+
+	@Test
+	void buildsRelationshipsWhenTargetIsAPackageDirectory() throws IOException {
+		writeShopSample();
+
+		CodeRelationshipGraph graph = builder.build(sourceRoot.resolve("sample/java/com/example/shop"));
+
+		assertThat(graph.getNodes()).extracting(CodeNode::qualifiedName).containsExactly(
+				"com.example.shop.DiscountCalculator", "com.example.shop.Order", "com.example.shop.OrderRepository",
+				"com.example.shop.OrderService");
+		assertThat(relationshipLines(graph)).containsExactlyInAnyOrder(SHOP_RELATIONSHIPS);
+		assertThat(graph.findRelatedNodes("com.example.shop.OrderService")).extracting(CodeNode::simpleName)
+				.containsExactlyInAnyOrder("DiscountCalculator", "Order", "OrderRepository");
+	}
+
+	@Test
+	void keepsNodesWhenThePackageDoesNotMatchTheDirectory() throws IOException {
+		write("misplaced/Order.java", """
+				package com.example.shop;
+
+				public class Order {}
+				""");
+		write("misplaced/OrderService.java", """
+				package com.example.shop;
+
+				public class OrderService {
+				    private Order order;
+				}
+				""");
+
+		CodeRelationshipGraph graph = builder.build(sourceRoot.resolve("misplaced"));
+
+		assertThat(graph.getNodes()).extracting(CodeNode::qualifiedName)
+				.containsExactly("com.example.shop.Order", "com.example.shop.OrderService");
+	}
+
+	@Test
+	void resolvesTheSourceRootFromThePackageDeclaration() throws IOException {
+		writeShopSample();
+		Path shop = sourceRoot.resolve("sample/java/com/example/shop");
+		Path sampleJava = sourceRoot.resolve("sample/java").toAbsolutePath().normalize();
+
+		List<ParsedJavaSource> sources = new JavaSourceParser().parse(shop);
+
+		assertThat(JavaSourceRoots.resolve(shop.toAbsolutePath().normalize(), sources)).containsExactly(sampleJava);
+		assertThat(JavaSourceRoots.resolve(sampleJava, new JavaSourceParser().parse(sampleJava))).containsExactly(sampleJava);
+	}
+
+	private static final String[] SHOP_RELATIONSHIPS = {
+			"DiscountCalculator -> Order",
+			"OrderRepository -> Order",
+			"OrderService -> DiscountCalculator",
+			"OrderService -> Order",
+			"OrderService -> OrderRepository"
+	};
+
+	private List<String> relationshipLines(CodeRelationshipGraph graph) {
+		return graph.getRelationships().stream()
+				.map(relationship -> relationship.source().simpleName() + " -> " + relationship.target().simpleName())
+				.toList();
+	}
+
+	private void writeShopSample() throws IOException {
+		write("sample/java/com/example/other/Customer.java", """
+				package com.example.other;
+
+				public class Customer {}
+				""");
+		write("sample/java/com/example/shop/Order.java", """
+				package com.example.shop;
+
+				public class Order {
+				    public double totalPrice;
+				}
+				""");
+		write("sample/java/com/example/shop/DiscountCalculator.java", """
+				package com.example.shop;
+
+				public class DiscountCalculator {
+				    public double calculate(Order order, String grade) {
+				        return order.totalPrice;
+				    }
+				}
+				""");
+		write("sample/java/com/example/shop/OrderRepository.java", """
+				package com.example.shop;
+
+				public class OrderRepository {
+				    public Order findById(String id) {
+				        return null;
+				    }
+				}
+				""");
+		write("sample/java/com/example/shop/OrderService.java", """
+				package com.example.shop;
+
+				import com.example.other.Customer;
+				import java.util.HashMap;
+				import java.util.Map;
+
+				public class OrderService {
+				    public static Map<String, Order> cache = new HashMap<>();
+				    private OrderRepository repository = new OrderRepository();
+				    private DiscountCalculator calculator = new DiscountCalculator();
+				    private Customer customer;
+				}
+				""");
+	}
+
 	private CodeRelationship onlyRelationship(CodeRelationshipGraph graph) {
 		assertThat(graph.getRelationships()).hasSize(1);
 		return graph.getRelationships().get(0);

@@ -101,7 +101,8 @@ class CodeQualityAgentFilesystemMcpIntegrationTest {
 		assertThat(receivedLlmRequests.get(0).messages().get(1).content())
 				.contains("- name: read_text_file")
 				.doesNotContain("write_file");
-		assertThat(agentResult.summary()).contains("Tool execution denied: write_file");
+		assertThat(agentResult.summary()).contains("Unavailable tool 'write_file'");
+		assertThat(agentResult.summary()).doesNotContain("class Created {}");
 		assertThat(fileToCreate).doesNotExist();
 	}
 

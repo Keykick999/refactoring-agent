@@ -3,6 +3,7 @@ package com.aicompany.agentharness.llm.gemini;
 import com.aicompany.agentharness.llm.Llm;
 import com.aicompany.agentharness.llm.LlmErrorCategory;
 import com.aicompany.agentharness.llm.LlmException;
+import com.aicompany.agentharness.llm.LlmRateLimiter;
 import com.aicompany.agentharness.llm.LlmRequest;
 import com.aicompany.agentharness.llm.LlmResponse;
 import com.aicompany.agentharness.llm.Message;
@@ -29,6 +30,7 @@ import java.util.stream.Collectors;
 
 /**
  * Gemini generateContent API를 사용하는 Llm 구현체.
+ * HTTP 요청마다 {@link LlmRateLimiter}를 통과하므로, RetryingLlm의 재시도도 한도에 포함된다.
  */
 public class GeminiLlm implements Llm {
 
@@ -46,12 +48,18 @@ public class GeminiLlm implements Llm {
 	private final String apiKey;
 	private final Duration timeout;
 	private final HttpClient httpClient;
+	private final LlmRateLimiter rateLimiter;
 	private final JsonMapper jsonMapper = new JsonMapper();
 
 	public GeminiLlm(String baseUrl, String model, String apiKey, Duration timeout) {
+		this(baseUrl, model, apiKey, timeout, LlmRateLimiter.UNLIMITED);
+	}
+
+	public GeminiLlm(String baseUrl, String model, String apiKey, Duration timeout, LlmRateLimiter rateLimiter) {
 		this.generateContentUri = URI.create(baseUrl.replaceAll("/+$", "") + "/models/" + model + ":generateContent");
 		this.apiKey = apiKey;
 		this.timeout = timeout;
+		this.rateLimiter = rateLimiter;
 		this.httpClient = HttpClient.newBuilder().connectTimeout(timeout).build();
 	}
 
@@ -99,6 +107,7 @@ public class GeminiLlm implements Llm {
 				.POST(HttpRequest.BodyPublishers.ofString(jsonMapper.writeValueAsString(geminiRequest), StandardCharsets.UTF_8))
 				.build();
 
+		rateLimiter.acquire();
 		HttpResponse<String> httpResponse;
 		try {
 			httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));

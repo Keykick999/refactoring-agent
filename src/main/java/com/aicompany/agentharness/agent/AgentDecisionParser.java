@@ -7,7 +7,10 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -48,7 +51,29 @@ public class AgentDecisionParser {
 	private static final TypeReference<Map<String, Object>> ARGUMENTS_TYPE = new TypeReference<>() {
 	};
 
+	private static final JsonMapper SCHEMA_MAPPER = new JsonMapper();
+
 	private final JsonMapper jsonMapper = new JsonMapper();
+
+	/**
+	 * toolName을 이번 요청의 이름 목록으로 제한한 Schema. 이름의 허용 여부는 판단하지 않는다.
+	 */
+	public static String responseSchema(List<String> toolNames) {
+		return withToolNameEnum(RESPONSE_JSON_SCHEMA, toolNames);
+	}
+
+	private static String withToolNameEnum(String responseSchema, List<String> toolNames) {
+		ObjectNode root = (ObjectNode) SCHEMA_MAPPER.readTree(responseSchema);
+		JsonNode toolName = root.path("properties").path("toolCall").path("properties").path("toolName");
+		if (!toolName.isObject()) {
+			throw new IllegalStateException("toolName schema is missing");
+		}
+		ArrayNode enumValues = ((ObjectNode) toolName).putArray("enum");
+		for (String name : toolNames) {
+			enumValues.add(name);
+		}
+		return SCHEMA_MAPPER.writeValueAsString(root);
+	}
 
 	/**
 	 * 해석할 수 없는 응답은 잘못된 Tool이 실행되지 않도록 실패한 FINISH로 변환한다.

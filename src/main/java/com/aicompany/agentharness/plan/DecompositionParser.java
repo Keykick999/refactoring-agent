@@ -34,6 +34,13 @@ public final class DecompositionParser {
 	private final PlanValidator validator = new PlanValidator();
 
 	public List<PlannedTask> parse(String response) {
+		return validator.validateDrafts(parseDrafts(response));
+	}
+
+	/**
+	 * JSON 모양만 읽는다. Task ID, 중복, cycle 검증은 호출자가 현재 계획과 합친 뒤 PlanValidator로 한다.
+	 */
+	public List<TaskDraft> parseDrafts(String response) {
 		try {
 			JsonNode root = jsonMapper.readTree(response);
 			if (!root.isObject() || !root.path("tasks").isArray()) {
@@ -43,7 +50,7 @@ public final class DecompositionParser {
 			for (JsonNode task : root.path("tasks")) {
 				drafts.add(new TaskDraft(required(task, "id"), required(task, "objective"), strings(task.path("dependsOn"))));
 			}
-			return validator.validateDrafts(drafts);
+			return List.copyOf(drafts);
 		}
 		catch (JacksonException exception) {
 			throw new InvalidPlanException("Decomposition response is not valid JSON.");

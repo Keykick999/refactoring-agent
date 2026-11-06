@@ -18,9 +18,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 계획을 저장하고, 실행 가능한 작업을 하나 처리하고, 필요할 때 계획을 고친 뒤 종료를 판단한다.
@@ -87,8 +89,9 @@ public class ProblemSolvingCoordinator {
 			catch (LlmException exception) {
 				throw exception;
 			}
-			catch (RuntimeException exception) {
-				throw new InvalidPlanException(exception.getMessage());
+			catch (PlanGenerationException exception) {
+				log.warn("{}", exception.getMessage());
+				return exception.toResult(request.objective());
 			}
 		}
 
@@ -123,11 +126,20 @@ public class ProblemSolvingCoordinator {
 			if (!check.needsMoreWork()) {
 				return finishCompleted(session);
 			}
-			List<PlanChange> additions = check.newTasks().stream()
-					.map(draft -> PlanChange.addTask(draft.id(), draft.objective(), draft.dependsOn()))
-					.toList();
+			List<PlannedTask> additions;
+			try {
+				additions = decomposer.decompose(request, graph, session.load());
+			}
+			catch (LlmException exception) {
+				return finish(session, PlanStatus.FAILED, exception.getMessage());
+			}
+			catch (PlanGenerationException exception) {
+				log.warn("{}", exception.getMessage());
+				session.blocked(exception.getMessage());
+				return exception.toResult(request.objective());
+			}
 			int before = session.load().tasks().size();
-			applyChanges(session, additions);
+			applyAdditions(session, additions);
 			if (session.load().tasks().size() == before) {
 				return finish(session, PlanStatus.BLOCKED, check.reason().isBlank()
 						? "Final check asked for more work but no valid task could be added."
@@ -159,6 +171,30 @@ public class ProblemSolvingCoordinator {
 		catch (RuntimeException exception) {
 			log.warn("Solver failed for {}", task.id(), exception);
 			return SolverDecision.finish(TaskOutcome.failed(exception.getMessage()), List.of());
+		}
+	}
+
+	private void applyAdditions(PlanStore.PlanSession session, List<PlannedTask> additions) {
+		Set<String> available = new HashSet<>();
+		for (PlannedTask existing : session.load().tasks()) {
+			available.add(existing.id());
+		}
+		List<PlannedTask> remaining = new ArrayList<>(additions);
+		while (!remaining.isEmpty()) {
+			PlannedTask next = null;
+			for (PlannedTask candidate : remaining) {
+				if (available.containsAll(candidate.dependsOn())) {
+					next = candidate;
+					break;
+				}
+			}
+			if (next == null) {
+				log.warn("Ignored additional tasks whose dependencies are not in the current plan");
+				return;
+			}
+			applyChanges(session, List.of(PlanChange.addTask(next.id(), next.objective(), next.dependsOn())));
+			available.add(next.id());
+			remaining.remove(next);
 		}
 	}
 

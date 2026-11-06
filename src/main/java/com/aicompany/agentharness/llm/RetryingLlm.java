@@ -26,12 +26,20 @@ public class RetryingLlm implements Llm {
 	}
 
 	@Override
+	public boolean nativeToolCalls() {
+		return delegate.nativeToolCalls();
+	}
+
+	@Override
 	public LlmResponse generate(LlmRequest request) {
 		for (int attempt = 1; ; attempt++) {
 			try {
 				return delegate.generate(request);
 			}
 			catch (RetryableLlmException exception) {
+				if (retryPolicy.exceedsMaxRetryAfter(exception.retryAfter())) {
+					throw tooLongToWait(exception);
+				}
 				if (attempt >= retryPolicy.maxAttempts()) {
 					throw giveUp(exception, attempt);
 				}
@@ -42,6 +50,14 @@ public class RetryingLlm implements Llm {
 				sleep(delay);
 			}
 		}
+	}
+
+	private LlmException tooLongToWait(RetryableLlmException exception) {
+		Duration retryAfter = exception.retryAfter().orElseThrow();
+		log.warn("LLM request failed (provider={}); provider asked to wait {}, longer than max-retry-after {}; not retrying",
+				providerName(), retryAfter, retryPolicy.maxRetryAfter());
+		return new LlmException("LLM request failed and the provider asked to wait %s, longer than max-retry-after %s: %s"
+				.formatted(retryAfter, retryPolicy.maxRetryAfter(), exception.getMessage()), exception.category(), exception);
 	}
 
 	private LlmException giveUp(RetryableLlmException exception, int attempts) {

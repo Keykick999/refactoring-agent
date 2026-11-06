@@ -8,7 +8,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Java 소스 루트를 읽어 인메모리 관계 그래프를 만든다.
+ * target 디렉터리 아래 Java 파일만 노드로 만들어 인메모리 관계 그래프를 만든다.
+ * target은 source root여도 되고 그 아래 package 디렉터리여도 된다.
  * 분석 실행, LLM 호출, 저장된 분석 결과와는 연결되어 있지 않다.
  */
 public final class CodeRelationshipGraphBuilder {
@@ -17,8 +18,8 @@ public final class CodeRelationshipGraphBuilder {
 	private final CodeNodeExtractor nodeExtractor = new CodeNodeExtractor();
 	private final CodeRelationshipExtractor relationshipExtractor = new CodeRelationshipExtractor();
 
-	public CodeRelationshipGraph build(Path sourceRoot) {
-		List<ParsedJavaSource> sources = parser.parse(sourceRoot);
+	public CodeRelationshipGraph build(Path target) {
+		List<ParsedJavaSource> sources = parser.parse(target);
 		Map<String, CodeNode> nodes = new LinkedHashMap<>();
 		for (ParsedJavaSource source : sources) {
 			for (CodeNode node : nodeExtractor.extract(source)) {
@@ -38,11 +39,11 @@ public final class CodeRelationshipGraphBuilder {
 		for (Map.Entry<RelationshipKey, EnumSet<RelationshipSource>> entry : kindsByRelationship.entrySet()) {
 			RelationshipKey key = entry.getKey();
 			CodeNode source = nodes.get(key.sourceQualifiedName());
-			CodeNode target = nodes.get(key.targetQualifiedName());
-			if (source == null || target == null) {
+			CodeNode destination = nodes.get(key.targetQualifiedName());
+			if (source == null || destination == null) {
 				continue;
 			}
-			relationships.add(new CodeRelationship(source, target, key.type(), List.copyOf(entry.getValue())));
+			relationships.add(new CodeRelationship(source, destination, key.type(), List.copyOf(entry.getValue())));
 		}
 		return new CodeRelationshipGraph(CodeRelationshipGraph.sortedNodes(nodes),
 				CodeRelationshipGraph.sortedRelationships(relationships));

@@ -113,8 +113,13 @@ class ProblemSolvingCoordinatorTest {
 		RecordingLlm llm = new RecordingLlm(request -> {
 			String prompt = promptOf(request);
 			if (prompt.contains("You decompose")) {
+				if (prompt.contains("No existing plan")) {
+					return json("""
+							{"tasks":[{"id":"t1","objective":"First look","dependsOn":[]}]}
+							""");
+				}
 				return json("""
-						{"tasks":[{"id":"t1","objective":"First look","dependsOn":[]}]}
+						{"tasks":[{"id":"t2","objective":"Analyze repository","dependsOn":["t1"]}]}
 						""");
 			}
 			if (prompt.contains("You solve one analysis task")) {
@@ -257,6 +262,97 @@ class ProblemSolvingCoordinatorTest {
 		assertThat(result.complete()).isFalse();
 		assertThat(store.begin(PlanIdentity.of(request())).existing().orElseThrow().status()).isEqualTo(PlanStatus.BLOCKED);
 		assertThat(requests.stream().filter(item -> content(item).contains("You review whether")).count()).isEqualTo(1);
+	}
+
+	@Test
+	void regeneratesInvalidPlanThenRunsTheValidPlan() throws IOException {
+		writeSources();
+		AtomicInteger decompositions = new AtomicInteger();
+		RecordingLlm llm = new RecordingLlm(request -> {
+			String prompt = promptOf(request);
+			if (prompt.contains("You decompose")) {
+				if (decompositions.getAndIncrement() == 0) {
+					return json("""
+							{"tasks":[{"id":"1","objective":"Analyze types","dependsOn":["parseJavaSources"]}]}
+							""");
+				}
+				assertThat(prompt).contains("Previous plan was rejected").contains("parseJavaSources");
+				return json("""
+						{"tasks":[{"id":"t1","objective":"Analyze OrderService","dependsOn":[]}]}
+						""");
+			}
+			if (prompt.contains("You solve one analysis task")) {
+				return finish("done");
+			}
+			if (prompt.contains("You review whether")) {
+				return json("{\"needsMoreWork\":false,\"reason\":\"enough\",\"newTasks\":[]}");
+			}
+			return synthesis();
+		});
+
+		FinalAnalysisResult result = coordinator(llm).solve(request());
+
+		assertThat(result.complete()).isTrue();
+		assertThat(decompositions).hasValue(2);
+		assertThat(store.begin(PlanIdentity.of(request())).existing().orElseThrow().task("t1")).isPresent();
+	}
+
+	@Test
+	void keepsCompletedTasksWhenAdditionalPlanGenerationFails() throws IOException {
+		writeSources();
+		RecordingLlm llm = new RecordingLlm(request -> {
+			String prompt = promptOf(request);
+			if (prompt.contains("No existing plan")) {
+				return json("""
+						{"tasks":[{"id":"t1","objective":"First look","dependsOn":[]}]}
+						""");
+			}
+			if (prompt.contains("You solve one analysis task")) {
+				return finish("looked");
+			}
+			if (prompt.contains("You review whether")) {
+				return json("{\"needsMoreWork\":true,\"reason\":\"need more\",\"newTasks\":[]}");
+			}
+			if (prompt.contains("You decompose")) {
+				return json("""
+						{"tasks":[{"id":"t2","objective":"Parse","dependsOn":["parseJavaSources"]}]}
+						""");
+			}
+			throw new AssertionError("synthesis must not replace the generation failure");
+		});
+
+		FinalAnalysisResult result = coordinator(llm).solve(request());
+
+		assertThat(result.complete()).isFalse();
+		assertThat(result.render()).contains("Plan generation failed").contains("parseJavaSources").contains("Semantic retries: 2");
+		AnalysisPlan plan = store.begin(PlanIdentity.of(request())).existing().orElseThrow();
+		assertThat(plan.task("t1")).get().extracting(PlannedTask::status).isEqualTo(PlanTaskStatus.COMPLETED);
+		assertThat(plan.task("t2")).isEmpty();
+	}
+
+	@Test
+	void reportsPlanGenerationFailureWithoutPersistingInvalidPlans() throws IOException {
+		writeSources();
+		RecordingLlm llm = new RecordingLlm(request -> {
+			String prompt = promptOf(request);
+			if (prompt.contains("You decompose")) {
+				return json("""
+						{"tasks":[{"id":"1","objective":"Analyze types","dependsOn":["parseJavaSources"]}]}
+						""");
+			}
+			throw new AssertionError("analysis must not run after plan generation fails");
+		});
+
+		FinalAnalysisResult result = coordinator(llm).solve(request());
+
+		assertThat(result.complete()).isFalse();
+		assertThat(result.render()).contains("Plan generation failed")
+				.contains("unknown task parseJavaSources")
+				.contains("Semantic retries: 2")
+				.contains("Analysis was not executed");
+		assertThat(store.begin(PlanIdentity.of(request())).existing()).isEmpty();
+		assertThat(requests.stream().filter(item -> content(item).contains("You decompose")).count()).isEqualTo(3);
+		assertThat(requests.stream().filter(item -> content(item).contains("You solve one analysis task")).count()).isZero();
 	}
 
 	@Test
